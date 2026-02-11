@@ -379,7 +379,7 @@ exports.getInvoicePDF = asyncHandler(async (req, res, next) => {
 // @route   POST /api/v1/invoices/:id/payment
 // @access  Private
 exports.recordPayment = asyncHandler(async (req, res, next) => {
-  const { amount, paymentMethod, paymentReference, paymentGateway, notes } = req.body;
+  const { amount, paymentMethod, paymentReference, paymentGateway, notes, templateStyle } = req.body;
 
   const invoice = await Invoice.findById(req.params.id);
 
@@ -438,6 +438,7 @@ exports.recordPayment = asyncHandler(async (req, res, next) => {
       total: invoice.total,
       amountPaid: amount,
       paymentMethod,
+      templateStyle: templateStyle || req.body.templateId || req.body.template,
       createdBy: req.user.id
     });
 

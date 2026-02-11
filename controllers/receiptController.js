@@ -99,7 +99,7 @@ exports.getReceipts = asyncHandler(async (req, res, next) => {
 // @route   POST /api/v1/receipts
 // @access  Private
 exports.createReceipt = asyncHandler(async (req, res, next) => {
-  const { customer, items, paymentMethod, amountPaid, notes } = req.body;
+  const { customer, items, paymentMethod, amountPaid, notes, templateStyle } = req.body;
   
   // Calculate totals
   let subtotal = 0;
@@ -208,6 +208,7 @@ exports.createReceipt = asyncHandler(async (req, res, next) => {
     cashier: req.user.id,
     notes,
     receiptNumber,
+    templateStyle: templateStyle || req.body.templateId || req.body.template,
     createdBy: req.user.id
     });
   } catch (error) {
@@ -266,6 +267,7 @@ exports.createReceiptFromInvoice = asyncHandler(async (req, res, next) => {
     total: invoice.total,
     amountPaid: invoice.amountPaid,
     paymentMethod: invoice.paymentMethod,
+    templateStyle: req.body.templateStyle || req.body.templateId || req.body.template,
     createdBy: req.user.id
   });
   

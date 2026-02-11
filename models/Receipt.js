@@ -57,6 +57,10 @@ const ReceiptSchema = new mongoose.Schema({
     required: true
   },
   paymentReference: String,
+  templateStyle: {
+    type: String,
+    default: 'standard'
+  },
   cashier: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User'

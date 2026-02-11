@@ -1,6 +1,32 @@
 const PDFDocument = require('pdfkit');
 const fs = require('fs');
 const path = require('path');
+const templates = require('../data/templates');
+
+const DEFAULT_RECEIPT_COLORS = {
+  primary: [41, 128, 185],
+  secondary: [52, 152, 219],
+  accent: [236, 240, 241],
+  text: [44, 62, 80]
+};
+
+const normalizeColor = (value, fallback) => {
+  if (Array.isArray(value) && value.length === 3) {
+    return value;
+  }
+  return fallback;
+};
+
+const resolveReceiptTemplate = (receipt) => {
+  const templateId = receipt?.templateStyle || receipt?.templateId || receipt?.template;
+  if (templateId) {
+    const found = templates.find((template) => template.id === templateId);
+    if (found) {
+      return found;
+    }
+  }
+  return templates.find((template) => template.id === 'standard') || templates[0] || {};
+};
 
 // Generate invoice PDF
 exports.invoice = async (invoice) => {
@@ -179,6 +205,13 @@ exports.receipt = async (receipt) => {
     try {
       const doc = new PDFDocument({ size: 'A6', margin: 20 });
       const buffers = [];
+      const template = resolveReceiptTemplate(receipt);
+      const colors = template.colors || {};
+      const primaryColor = normalizeColor(colors.primary, DEFAULT_RECEIPT_COLORS.primary);
+      const secondaryColor = normalizeColor(colors.secondary, DEFAULT_RECEIPT_COLORS.secondary);
+      const accentColor = normalizeColor(colors.accent, DEFAULT_RECEIPT_COLORS.accent);
+      const textColor = normalizeColor(colors.text, DEFAULT_RECEIPT_COLORS.text);
+      const pageWidth = doc.page.width;
       
       doc.on('data', buffers.push.bind(buffers));
       doc.on('end', () => {
@@ -187,12 +220,24 @@ exports.receipt = async (receipt) => {
       });
 
       // Header
+      const headerHeight = template?.layout?.showHeaderBorder ? 28 : 0;
+      if (headerHeight) {
+        doc.rect(0, 0, pageWidth, headerHeight).fill(primaryColor);
+        doc.fillColor('white')
+          .fontSize(12)
+          .text(receipt.business.name, 0, 10, { align: 'center', width: pageWidth });
+        doc.fillColor(textColor);
+        doc.y = headerHeight + 6;
+      } else {
+        doc
+          .fillColor(primaryColor)
+          .fontSize(14)
+          .text(receipt.business.name, { align: 'center' })
+          .moveDown(0.2);
+      }
+
       doc
-        .fontSize(14)
-        .text(receipt.business.name, { align: 'center' })
-        .moveDown(0.2);
-      
-      doc
+        .fillColor(textColor)
         .fontSize(8)
         .text(receipt.business.address?.street || '', { align: 'center' })
         .text(`Phone: ${receipt.business.phone}`, { align: 'center' })
@@ -201,14 +246,16 @@ exports.receipt = async (receipt) => {
       // Title
       doc
         .fontSize(12)
+        .fillColor(primaryColor)
         .text('RECEIPT', { align: 'center', underline: true })
         .moveDown(0.5);
 
       // Receipt details
       doc
         .fontSize(8)
+        .fillColor(textColor)
         .text(`Receipt No: ${receipt.receiptNumber}`)
-        .text(`Date: ${new Date().toLocaleDateString()}`)
+        .text(`Date: ${new Date(receipt.date || Date.now()).toLocaleDateString()}`)
         .text(`Invoice No: ${receipt.invoice?.invoiceNumber || 'N/A'}`)
         .moveDown(0.5);
 
@@ -218,26 +265,28 @@ exports.receipt = async (receipt) => {
         .moveDown(0.5);
 
       // Items
+      const currency = receipt.currency || receipt.invoice?.currency || 'USD';
       doc.text('Items:');
       receipt.items.forEach(item => {
-        doc.text(`  ${item.description} x${item.quantity} - ${receipt.currency} ${item.total.toFixed(2)}`);
+        doc.text(`  ${item.description} x${item.quantity} - ${currency} ${item.total.toFixed(2)}`);
       });
 
       doc.moveDown(0.5);
 
       // Summary
-      doc.text(`Subtotal: ${receipt.currency} ${receipt.subtotal.toFixed(2)}`);
-      doc.text(`Tax: ${receipt.currency} ${receipt.tax.amount.toFixed(2)}`);
-      doc.text(`Total: ${receipt.currency} ${receipt.total.toFixed(2)}`);
+      doc.text(`Subtotal: ${currency} ${receipt.subtotal.toFixed(2)}`);
+      doc.text(`Tax: ${currency} ${receipt.tax.amount.toFixed(2)}`);
+      doc.text(`Total: ${currency} ${receipt.total.toFixed(2)}`);
       doc.moveDown(0.5);
       doc.text(`Payment Method: ${receipt.paymentMethod}`);
-      doc.text(`Amount Paid: ${receipt.currency} ${receipt.amountPaid.toFixed(2)}`);
-      doc.text(`Change: ${receipt.currency} ${(receipt.amountPaid - receipt.total).toFixed(2)}`);
+      doc.text(`Amount Paid: ${currency} ${receipt.amountPaid.toFixed(2)}`);
+      doc.text(`Change: ${currency} ${(receipt.amountPaid - receipt.total).toFixed(2)}`);
 
       // Footer
       doc.moveDown(1);
       doc
         .fontSize(7)
+        .fillColor(textColor)
         .text('Thank you for your purchase!', { align: 'center' })
         .text(receipt.business.name, { align: 'center' })
         .text(new Date().toLocaleString(), { align: 'center' });

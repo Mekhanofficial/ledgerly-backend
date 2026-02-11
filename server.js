@@ -26,7 +26,9 @@ const allowedOrigins = [
   'http://localhost:19006',
   'http://localhost:8081',
   'http://localhost:5173',
-  'http://localhost:5174'
+  'http://localhost:5174',
+  'https://ledgerly-weld.vercel.app',
+  /\.vercel\.app$/  // This will allow any Vercel deployment
 ];
 
 const corsOptions = {
@@ -84,6 +86,7 @@ const payments = require('./routes/payments');
 const reports = require('./routes/reports');
 const team = require('./routes/team');
 const settings = require('./routes/settings');
+const templates = require('./routes/templates');
 
 // Mount routers
 app.use('/api/v1/auth', auth);
@@ -99,6 +102,7 @@ app.use('/api/v1/payments', payments);
 app.use('/api/v1/reports', reports);
 app.use('/api/v1/team', team);
 app.use('/api/v1/settings', settings);
+app.use('/api/v1/templates', templates);
 
 // Health check
 app.get('/health', (req, res) => {

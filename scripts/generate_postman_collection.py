@@ -200,7 +200,7 @@ collection = {
         }
     ],
     'variable': [
-        {'key': 'base_url', 'value': 'http://localhost:7000/api/v1'},
+        {'key': 'base_url', 'value': 'http://localhost:5173/api/v1'},
         {'key': 'auth_token', 'value': 'Bearer <token>'}
     ]
 }
