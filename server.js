@@ -26,9 +26,7 @@ const allowedOrigins = [
   'http://localhost:19006',
   'http://localhost:8081',
   'http://localhost:5173',
-  'http://localhost:5174',
-  'https://ledgerly-weld.vercel.app',
-  /\.vercel\.app$/  // This will allow any Vercel deployment
+  'http://localhost:5174'
 ];
 
 const corsOptions = {
