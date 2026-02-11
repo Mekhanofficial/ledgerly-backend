@@ -21,12 +21,18 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // Enable CORS
+const envOrigins = process.env.CORS_ORIGIN
+  ? process.env.CORS_ORIGIN.split(',').map((origin) => origin.trim()).filter(Boolean)
+  : [];
+
 const allowedOrigins = [
   'http://localhost:7000',
   'http://localhost:19006',
   'http://localhost:8081',
   'http://localhost:5173',
-  'http://localhost:5174'
+  'http://localhost:5174',
+  'https://ledgerly-weld.vercel.app',
+  ...envOrigins
 ];
 
 const corsOptions = {
