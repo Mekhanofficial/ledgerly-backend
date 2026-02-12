@@ -53,7 +53,7 @@ exports.register = asyncHandler(async (req, res, next) => {
   
   await sendEmail({
     to: user.email,
-    subject: 'Email Verification - InvoiceFlow',
+    subject: 'Email Verification - Ledgerly',
     template: 'verification',
     context: {
       name: user.name,

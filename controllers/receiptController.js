@@ -19,7 +19,7 @@ const ensureWalkInCustomer = async (req, fallbackName = 'Walk-in Customer') => {
     return existing._id;
   }
 
-  const generatedEmail = `walkin-${Date.now()}@invoiceflow.local`;
+  const generatedEmail = `walkin-${Date.now()}@Ledgerly.local`;
   const newCustomer = await Customer.create({
     business: req.user.business,
     name: fallbackName,

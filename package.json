@@ -1,7 +1,7 @@
 {
-  "name": "invoiceflow-backend",
+  "name": "Ledgerly-backend",
   "version": "1.0.0",
-  "description": "Backend for InvoiceFlow - Invoice, Receipt & Inventory Management",
+  "description": "Backend for Ledgerly - Invoice, Receipt & Inventory Management",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",

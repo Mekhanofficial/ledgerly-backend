@@ -123,7 +123,7 @@ app.use('/api/v1/templates', templates);
 app.get('/health', (req, res) => {
   res.status(200).json({
     success: true,
-    message: 'InvoiceFlow API is running',
+    message: 'Ledgerly API is running',
     timestamp: new Date().toISOString()
   });
 });
