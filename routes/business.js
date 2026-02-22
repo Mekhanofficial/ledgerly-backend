@@ -16,7 +16,7 @@ router.use(protect);
 
 router.route('/')
   .get(authorize('admin', 'accountant', 'staff', 'viewer'), getBusinessProfile)
-  .put(authorize('super_admin'), updateBusinessProfile);
+  .put(authorize('super_admin', 'admin', 'accountant'), updateBusinessProfile);
 
 router.get('/payment-methods', authorize('super_admin'), getPaymentMethods);
 router.post('/payment-methods', authorize('super_admin'), addPaymentMethod);

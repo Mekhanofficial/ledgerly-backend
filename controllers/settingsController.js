@@ -1,5 +1,16 @@
 const Settings = require('../models/Settings');
 const AuditLog = require('../models/AuditLog');
+const Business = require('../models/Business');
+const Category = require('../models/Category');
+const Customer = require('../models/Customer');
+const Document = require('../models/Document');
+const Invoice = require('../models/Invoice');
+const Payment = require('../models/Payment');
+const Product = require('../models/Product');
+const Receipt = require('../models/Receipt');
+const Supplier = require('../models/Supplier');
+const TaxSettings = require('../models/TaxSettings');
+const User = require('../models/User');
 const ErrorResponse = require('../utils/errorResponse');
 const asyncHandler = require('../utils/asyncHandler');
 
@@ -40,7 +51,7 @@ exports.getSettings = asyncHandler(async (req, res) => {
 // @route   PUT /api/v1/settings
 // @access  Private (Admin/Accountant)
 exports.updateSettings = asyncHandler(async (req, res, next) => {
-  const { invoice, receipt, notifications, backup } = req.body;
+  const { invoice, receipt, preferences, notifications, backup, rolePermissions } = req.body;
 
   const settings = await Settings.findOneAndUpdate(
     { business: req.user.business },
@@ -50,13 +61,21 @@ exports.updateSettings = asyncHandler(async (req, res, next) => {
 
   settings.invoice = settings.invoice || {};
   settings.receipt = settings.receipt || {};
+  settings.preferences = settings.preferences || {};
   settings.notifications = settings.notifications || {};
   settings.backup = settings.backup || {};
+  settings.rolePermissions = settings.rolePermissions || {};
 
   mergeSection(settings.invoice, invoice);
   mergeSection(settings.receipt, receipt);
+  mergeSection(settings.preferences, preferences);
   mergeSection(settings.notifications, notifications);
   mergeSection(settings.backup, backup);
+  mergeSection(settings.rolePermissions, rolePermissions);
+
+  if (rolePermissions) {
+    settings.markModified('rolePermissions');
+  }
 
   await settings.save();
   await logAuditEntry(req, 'update-settings', 'Settings', req.body);
@@ -83,6 +102,7 @@ exports.updateIntegration = asyncHandler(async (req, res, next) => {
   settings.integrations = settings.integrations || {};
   settings.integrations[provider] = settings.integrations[provider] || {};
   mergeSection(settings.integrations[provider], payload);
+  settings.markModified('integrations');
 
   await settings.save();
   await logAuditEntry(req, 'update-integration', 'Settings', { provider, payload });
@@ -138,4 +158,91 @@ exports.getAuditLogs = asyncHandler(async (req, res) => {
     count: logs.length,
     data: logs
   });
+});
+
+// @desc    Export backup snapshot (JSON)
+// @route   GET /api/v1/settings/backup/export
+// @access  Private (Admin/Accountant)
+exports.exportBackupSnapshot = asyncHandler(async (req, res) => {
+  const businessId = req.user.business;
+
+  const [
+    business,
+    settings,
+    taxSettings,
+    users,
+    customers,
+    categories,
+    suppliers,
+    products,
+    invoices,
+    receipts,
+    payments,
+    documents,
+    auditLogs
+  ] = await Promise.all([
+    Business.findById(businessId).lean(),
+    Settings.findOne({ business: businessId }).lean(),
+    TaxSettings.findOne().lean(),
+    User.find({ business: businessId })
+      .select('-password -resetPasswordToken -resetPasswordExpire -verificationToken -invitationToken -invitationExpire')
+      .lean(),
+    Customer.find({ business: businessId }).lean(),
+    Category.find({ business: businessId }).lean(),
+    Supplier.find({ business: businessId }).lean(),
+    Product.find({ business: businessId }).lean(),
+    Invoice.find({ business: businessId }).lean(),
+    Receipt.find({ business: businessId }).lean(),
+    Payment.find({ business: businessId }).lean(),
+    Document.find({ business: businessId }).lean(),
+    AuditLog.find({ business: businessId }).sort({ timestamp: -1 }).limit(1000).lean()
+  ]);
+
+  const snapshot = {
+    schemaVersion: '1.0',
+    exportedAt: new Date().toISOString(),
+    exportedBy: {
+      id: req.user.id,
+      email: req.user.email,
+      role: req.user.role
+    },
+    businessId: String(businessId),
+    counts: {
+      users: users.length,
+      customers: customers.length,
+      categories: categories.length,
+      suppliers: suppliers.length,
+      products: products.length,
+      invoices: invoices.length,
+      receipts: receipts.length,
+      payments: payments.length,
+      documents: documents.length,
+      auditLogs: auditLogs.length
+    },
+    data: {
+      business,
+      settings: settings || null,
+      taxSettings: taxSettings || null,
+      users,
+      customers,
+      categories,
+      suppliers,
+      products,
+      invoices,
+      receipts,
+      payments,
+      documents,
+      auditLogs
+    },
+    notes: [
+      'Tax settings are currently exported from the global tax settings collection.',
+      'Audit logs are capped to the most recent 1000 entries in this export.'
+    ]
+  };
+
+  const fileName = `ledgerly-backup-${String(businessId)}-${new Date().toISOString().split('T')[0]}.json`;
+
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename=\"${fileName}\"`);
+  res.status(200).send(JSON.stringify(snapshot, null, 2));
 });

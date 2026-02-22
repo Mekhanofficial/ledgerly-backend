@@ -64,6 +64,66 @@ const resolveOverrideInput = (payload = {}) => {
   };
 };
 
+const RECURRING_FREQUENCIES = new Set(['daily', 'weekly', 'monthly', 'quarterly', 'yearly']);
+const RECURRING_STATUSES = new Set(['active', 'paused', 'completed']);
+
+const normalizeRecurringFrequency = (value) => {
+  const normalized = String(value || 'monthly').toLowerCase();
+  return RECURRING_FREQUENCIES.has(normalized) ? normalized : 'monthly';
+};
+
+const normalizeRecurringStatus = (value) => {
+  const normalized = String(value || 'active').toLowerCase();
+  return RECURRING_STATUSES.has(normalized) ? normalized : 'active';
+};
+
+const parseDateValue = (value, fallbackDate) => {
+  if (!hasValue(value)) return fallbackDate ? new Date(fallbackDate) : undefined;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? (fallbackDate ? new Date(fallbackDate) : undefined) : parsed;
+};
+
+const resolveRecurringInput = (payload = {}, fallbackDate) => {
+  if (!payload || typeof payload !== 'object') {
+    return { isRecurring: false };
+  }
+
+  const isRecurring = Boolean(payload.isRecurring);
+  if (!isRecurring) {
+    return { isRecurring: false };
+  }
+
+  const frequency = normalizeRecurringFrequency(payload.frequency);
+  const parsedInterval = parseInt(payload.interval, 10);
+  const interval = Number.isFinite(parsedInterval) && parsedInterval > 0 ? parsedInterval : 1;
+
+  const startDate = parseDateValue(payload.startDate, fallbackDate || new Date());
+  const nextInvoiceDate = parseDateValue(payload.nextInvoiceDate, startDate || fallbackDate || new Date());
+  const endDate = parseDateValue(payload.endDate);
+
+  const parsedTotalCycles = parseInt(payload.totalCycles, 10);
+  const totalCycles = Number.isFinite(parsedTotalCycles) && parsedTotalCycles > 0 ? parsedTotalCycles : undefined;
+
+  const parsedCompletedCycles = parseInt(payload.completedCycles, 10);
+  const completedCycles = Number.isFinite(parsedCompletedCycles) && parsedCompletedCycles >= 0
+    ? parsedCompletedCycles
+    : 0;
+
+  const status = normalizeRecurringStatus(payload.status);
+
+  return {
+    isRecurring: true,
+    status,
+    frequency,
+    interval,
+    startDate,
+    endDate,
+    nextInvoiceDate,
+    totalCycles,
+    completedCycles
+  };
+};
+
 // @desc    Get all invoices
 // @route   GET /api/v1/invoices
 // @access  Private
@@ -247,6 +307,12 @@ exports.createInvoice = asyncHandler(async (req, res, next) => {
     req.body.dueDate = new Date(Date.now() + dueDays * 24 * 60 * 60 * 1000);
   }
 
+  const recurringInput = resolveRecurringInput(
+    req.body.recurring,
+    req.body.date || req.body.dueDate || new Date()
+  );
+  req.body.recurring = recurringInput;
+
   const taxSettings = await getTaxSettings();
   const {
     overrideRate,
@@ -411,6 +477,13 @@ exports.updateInvoice = asyncHandler(async (req, res, next) => {
 
   // Add updatedBy
   req.body.updatedBy = req.user.id;
+
+  if (hasValue(req.body.recurring)) {
+    req.body.recurring = resolveRecurringInput(
+      req.body.recurring,
+      req.body.date || invoice.date || new Date()
+    );
+  }
 
   // Handle inventory adjustments if items changed
   if (req.body.items) {
@@ -1079,6 +1152,187 @@ exports.duplicateInvoice = asyncHandler(async (req, res, next) => {
     success: true,
     message: 'Invoice duplicated successfully',
     data: newInvoice
+  });
+});
+
+// @desc    Get recurring invoices
+// @route   GET /api/v1/invoices/recurring
+// @access  Private
+exports.getRecurringInvoices = asyncHandler(async (req, res, next) => {
+  const {
+    status = 'all',
+    search,
+    page = 1,
+    limit = 20
+  } = req.query;
+
+  const parsedPage = Math.max(parseInt(page, 10) || 1, 1);
+  const parsedLimit = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 100);
+
+  const query = {
+    business: req.user.business,
+    'recurring.isRecurring': true
+  };
+
+  const effectiveRole = getEffectiveRole(req);
+  if (isStaff(effectiveRole)) {
+    query.createdBy = req.user.id;
+  }
+
+  if (status && status !== 'all') {
+    query['recurring.status'] = normalizeRecurringStatus(status);
+  }
+
+  if (search) {
+    const pattern = new RegExp(search, 'i');
+    const matchedCustomers = await Customer.find({
+      business: req.user.business,
+      name: pattern
+    }).select('_id');
+    const customerIds = matchedCustomers.map((customer) => customer._id);
+
+    query.$or = [{ invoiceNumber: pattern }];
+    if (customerIds.length > 0) {
+      query.$or.push({ customer: { $in: customerIds } });
+    }
+  }
+
+  const skip = (parsedPage - 1) * parsedLimit;
+
+  const [invoices, total] = await Promise.all([
+    Invoice.find(query)
+      .populate('customer', 'name email phone company')
+      .populate('createdBy', 'name email')
+      .sort({ 'recurring.nextInvoiceDate': 1, createdAt: -1 })
+      .skip(skip)
+      .limit(parsedLimit),
+    Invoice.countDocuments(query)
+  ]);
+
+  res.status(200).json({
+    success: true,
+    count: invoices.length,
+    total,
+    pages: Math.ceil(total / parsedLimit),
+    data: invoices
+  });
+});
+
+// @desc    Convert an invoice to recurring
+// @route   POST /api/v1/invoices/:id/recurring
+// @access  Private
+exports.setInvoiceRecurring = asyncHandler(async (req, res, next) => {
+  const invoice = await Invoice.findById(req.params.id);
+
+  if (!invoice) {
+    return next(new ErrorResponse(`Invoice not found with id ${req.params.id}`, 404));
+  }
+
+  if (invoice.business.toString() !== req.user.business.toString()) {
+    return next(new ErrorResponse('Not authorized to update this invoice', 403));
+  }
+
+  const effectiveRole = getEffectiveRole(req);
+  if (isClient(effectiveRole)) {
+    return next(new ErrorResponse('Not authorized to update recurring invoices', 403));
+  }
+  if (isStaff(effectiveRole) && invoice.createdBy?.toString() !== req.user.id) {
+    return next(new ErrorResponse('Not authorized to update this invoice', 403));
+  }
+
+  const recurringPayload =
+    req.body?.recurring && typeof req.body.recurring === 'object'
+      ? req.body.recurring
+      : req.body;
+
+  const recurringConfig = resolveRecurringInput(
+    { ...recurringPayload, isRecurring: true, status: recurringPayload?.status || 'active' },
+    recurringPayload?.startDate || invoice.date || new Date()
+  );
+
+  invoice.recurring = {
+    ...(invoice.recurring?.toObject?.() || {}),
+    ...recurringConfig,
+    isRecurring: true,
+    status: normalizeRecurringStatus(recurringConfig.status || 'active')
+  };
+
+  await invoice.save();
+
+  res.status(200).json({
+    success: true,
+    message: 'Recurring schedule saved',
+    data: invoice
+  });
+});
+
+// @desc    Pause recurring invoice
+// @route   PUT /api/v1/invoices/recurring/:id/pause
+// @access  Private
+exports.pauseRecurringInvoice = asyncHandler(async (req, res, next) => {
+  const invoice = await Invoice.findById(req.params.id);
+
+  if (!invoice) {
+    return next(new ErrorResponse(`Invoice not found with id ${req.params.id}`, 404));
+  }
+
+  if (invoice.business.toString() !== req.user.business.toString()) {
+    return next(new ErrorResponse('Not authorized to update this invoice', 403));
+  }
+
+  const effectiveRole = getEffectiveRole(req);
+  if (isStaff(effectiveRole) && invoice.createdBy?.toString() !== req.user.id) {
+    return next(new ErrorResponse('Not authorized to update this invoice', 403));
+  }
+
+  if (!invoice.recurring?.isRecurring) {
+    return next(new ErrorResponse('Invoice is not set as recurring', 400));
+  }
+
+  invoice.recurring.status = 'paused';
+  await invoice.save();
+
+  res.status(200).json({
+    success: true,
+    message: 'Recurring invoice paused',
+    data: invoice
+  });
+});
+
+// @desc    Resume recurring invoice
+// @route   PUT /api/v1/invoices/recurring/:id/resume
+// @access  Private
+exports.resumeRecurringInvoice = asyncHandler(async (req, res, next) => {
+  const invoice = await Invoice.findById(req.params.id);
+
+  if (!invoice) {
+    return next(new ErrorResponse(`Invoice not found with id ${req.params.id}`, 404));
+  }
+
+  if (invoice.business.toString() !== req.user.business.toString()) {
+    return next(new ErrorResponse('Not authorized to update this invoice', 403));
+  }
+
+  const effectiveRole = getEffectiveRole(req);
+  if (isStaff(effectiveRole) && invoice.createdBy?.toString() !== req.user.id) {
+    return next(new ErrorResponse('Not authorized to update this invoice', 403));
+  }
+
+  if (!invoice.recurring) {
+    return next(new ErrorResponse('Recurring settings not found for this invoice', 400));
+  }
+
+  invoice.recurring.isRecurring = true;
+  invoice.recurring.status = 'active';
+  if (!invoice.recurring.nextInvoiceDate) {
+    invoice.recurring.nextInvoiceDate = invoice.recurring.startDate || new Date();
+  }
+  await invoice.save();
+
+  res.status(200).json({
+    success: true,
+    message: 'Recurring invoice resumed',
+    data: invoice
   });
 });
 

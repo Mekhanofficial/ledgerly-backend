@@ -33,6 +33,33 @@ const SettingsSchema = new mongoose.Schema({
       default: true
     }
   },
+  preferences: {
+    language: {
+      type: String,
+      default: 'en-US'
+    },
+    fontSize: {
+      type: Number,
+      default: 16
+    },
+    fontScaleFactor: {
+      type: Number,
+      default: 1,
+      min: 0.5,
+      max: 2
+    },
+    currencyDecimalPlaces: {
+      type: Number,
+      default: 2,
+      min: 0,
+      max: 4
+    },
+    numberFormat: {
+      type: String,
+      enum: ['standard', 'compact', 'european'],
+      default: 'standard'
+    }
+  },
   notifications: {
     lowStock: {
       enabled: {
@@ -66,28 +93,25 @@ const SettingsSchema = new mongoose.Schema({
       recipients: [String]
     }
   },
+  rolePermissions: {
+    type: mongoose.Schema.Types.Mixed,
+    default: {}
+  },
   integrations: {
-    stripe: {
-      enabled: {
-        type: Boolean,
-        default: false
-      },
-      publicKey: String,
-      secretKey: String,
-      webhookSecret: String
-    },
-    email: {
-      enabled: {
-        type: Boolean,
-        default: false
-      },
-      provider: String,
-      host: String,
-      port: Number,
-      secure: Boolean,
-      username: String,
-      password: String
-    }
+    type: mongoose.Schema.Types.Mixed,
+    default: () => ({
+      stripe: { enabled: false, publicKey: '', secretKey: '', webhookSecret: '' },
+      paypal: { enabled: false, clientId: '', secret: '', mode: 'sandbox' },
+      paystack: { enabled: false, publicKey: '', secretKey: '' },
+      email: { enabled: false, provider: 'smtp', host: '', port: 587, secure: false, username: '', password: '' },
+      quickbooks: { enabled: false, clientId: '', clientSecret: '' },
+      xero: { enabled: false, clientId: '', clientSecret: '' },
+      wave: { enabled: false, apiKey: '' },
+      zapier: { enabled: false, webhookUrl: '' },
+      whatsapp: { enabled: false, apiKey: '', senderId: '' },
+      sms: { enabled: false, provider: '', apiKey: '', senderId: '' },
+      restApi: { enabled: true, keyRotationDays: 90, webhookBaseUrl: '' }
+    })
   },
   backup: {
     autoBackup: {

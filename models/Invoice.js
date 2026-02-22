@@ -161,6 +161,11 @@ const InvoiceSchema = new mongoose.Schema({
       type: Boolean,
       default: false
     },
+    status: {
+      type: String,
+      enum: ['active', 'paused', 'completed'],
+      default: 'active'
+    },
     frequency: {
       type: String,
       enum: ['daily', 'weekly', 'monthly', 'quarterly', 'yearly']

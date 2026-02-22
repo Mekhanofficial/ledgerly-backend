@@ -1,5 +1,6 @@
 const crypto = require('crypto');
 const User = require('../models/User');
+const Settings = require('../models/Settings');
 const AuditLog = require('../models/AuditLog');
 const ErrorResponse = require('../utils/errorResponse');
 const asyncHandler = require('../utils/asyncHandler');
@@ -16,6 +17,16 @@ const {
 const getRequesterRole = (req) => req.user?.effectiveRole || normalizeRole(req.user?.role);
 const ADMIN_ALLOWED_ROLES = ['admin', 'accountant', 'staff', 'client', 'viewer'];
 const isProtectedAdminRole = (role) => isSuperAdmin(role) || isAdmin(role);
+
+const clonePermissions = (value) => JSON.parse(JSON.stringify(value || {}));
+
+const getRolePermissionsFromSettings = async (businessId, role) => {
+  if (!businessId || !role) return null;
+  const settings = await Settings.findOne({ business: businessId }).select('rolePermissions');
+  const template = settings?.rolePermissions?.[normalizeRole(role)];
+  if (!template || typeof template !== 'object') return null;
+  return clonePermissions(template);
+};
 
 const logAuditEntry = async (req, action, resource, details = {}) => {
   await AuditLog.create({
@@ -97,6 +108,9 @@ exports.inviteTeamMember = asyncHandler(async (req, res, next) => {
 
   const tempPassword = crypto.randomBytes(8).toString('hex');
 
+  const templatePermissions = await getRolePermissionsFromSettings(req.user.business, normalizedRole);
+  const fallbackPermissions = templatePermissions || getDefaultPermissions(normalizedRole);
+
   const user = await User.create({
     name,
     email: email.toLowerCase(),
@@ -106,7 +120,7 @@ exports.inviteTeamMember = asyncHandler(async (req, res, next) => {
     invitedBy: req.user.id,
     invitationAccepted: false,
     customer: normalizedRole === 'client' ? customerId : undefined,
-    permissions: isSuperAdmin(requesterRole) ? (permissions || getDefaultPermissions(normalizedRole)) : getDefaultPermissions(normalizedRole)
+    permissions: isSuperAdmin(requesterRole) ? (permissions || fallbackPermissions) : fallbackPermissions
   });
 
   const token = user.getInvitationToken();
@@ -247,7 +261,8 @@ exports.updateTeamMember = asyncHandler(async (req, res, next) => {
     }
     user.role = normalizedRole;
     if (!req.body.permissions) {
-      user.permissions = getDefaultPermissions(normalizedRole);
+      const templatePermissions = await getRolePermissionsFromSettings(req.user.business, normalizedRole);
+      user.permissions = templatePermissions || getDefaultPermissions(normalizedRole);
     }
   }
 

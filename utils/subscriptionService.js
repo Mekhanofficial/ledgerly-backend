@@ -3,11 +3,25 @@ const Subscription = require('../models/Subscription');
 const User = require('../models/User');
 const { PLAN_DEFINITIONS, normalizePlanId } = require('./planConfig');
 
-const TRIAL_DAYS = 30;
+const TRIAL_DAYS = 7;
 const TRIAL_PLAN = 'professional';
 const TRIAL_INVOICE_LIMIT = 100;
+const INVOICE_RESET_DAYS = Number(process.env.INVOICE_RESET_DAYS || 0);
 
 const addDays = (date, days) => new Date(date.getTime() + days * 24 * 60 * 60 * 1000);
+const getInvoiceResetCutoff = (now) => (INVOICE_RESET_DAYS > 0
+  ? new Date(now.getTime() - INVOICE_RESET_DAYS * 24 * 60 * 60 * 1000)
+  : new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)));
+
+const shouldResetInvoiceCount = (lastReset, now) => {
+  if (!lastReset) return true;
+  if (INVOICE_RESET_DAYS > 0) {
+    return lastReset < getInvoiceResetCutoff(now);
+  }
+  return lastReset.getUTCFullYear() !== now.getUTCFullYear()
+    || lastReset.getUTCMonth() !== now.getUTCMonth();
+};
+
 
 const startTrialForUser = async ({ user, business }) => {
   const now = new Date();
@@ -121,9 +135,7 @@ const resetInvoiceCountIfNeeded = async (user) => {
   if (!user) return user;
   const now = new Date();
   const lastReset = user.invoiceCountResetAt ? new Date(user.invoiceCountResetAt) : null;
-  const needsReset = !lastReset
-    || lastReset.getUTCFullYear() !== now.getUTCFullYear()
-    || lastReset.getUTCMonth() !== now.getUTCMonth();
+  const needsReset = shouldResetInvoiceCount(lastReset, now);
 
   if (needsReset) {
     user.invoiceCountThisMonth = 0;
@@ -170,7 +182,13 @@ const syncTrialPeriods = async () => {
       userUpdates.push({
         updateOne: {
           filter: { _id: sub.user, subscriptionStatus: 'trial' },
-          update: { $set: { trialEndsAt: expectedEnd, subscriptionEndsAt: expectedEnd } }
+          update: {
+            $set: {
+              trialEndsAt: expectedEnd,
+              subscriptionEndsAt: expectedEnd,
+              invoiceLimit: TRIAL_INVOICE_LIMIT
+            }
+          }
         }
       });
     }
@@ -200,14 +218,14 @@ const syncTrialPeriods = async () => {
 
 const resetMonthlyInvoiceCounts = async () => {
   const now = new Date();
-  const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+  const resetCutoff = getInvoiceResetCutoff(now);
 
   await syncTrialPeriods();
 
   await User.updateMany(
     {
       $or: [
-        { invoiceCountResetAt: { $lt: monthStart } },
+        { invoiceCountResetAt: { $lt: resetCutoff } },
         { invoiceCountResetAt: { $exists: false } }
       ]
     },

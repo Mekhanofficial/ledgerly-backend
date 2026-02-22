@@ -6,7 +6,12 @@ const sendEmail = require('../utils/email');
 const crypto = require('crypto');
 const path = require('path');
 const { getDefaultPermissions } = require('../utils/rolePermissions');
-const { startTrialForUser } = require('../utils/subscriptionService');
+const {
+  startTrialForUser,
+  resolveBillingOwner,
+  expireSubscriptionIfNeeded,
+  syncBusinessFromUser
+} = require('../utils/subscriptionService');
 
 // @desc    Register user
 // @route   POST /api/v1/auth/register
@@ -131,6 +136,10 @@ exports.logout = asyncHandler(async (req, res, next) => {
 // @route   GET /api/v1/auth/me
 // @access  Private
 exports.getMe = asyncHandler(async (req, res, next) => {
+  const billingOwner = await resolveBillingOwner(req.user);
+  await expireSubscriptionIfNeeded(billingOwner);
+  await syncBusinessFromUser(billingOwner);
+
   const user = await User.findById(req.user.id)
     .populate('business', 'name logo email phone address subscription currency');
 
