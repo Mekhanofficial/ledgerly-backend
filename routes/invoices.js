@@ -15,6 +15,11 @@ const {
   duplicateInvoice
 } = require('../controllers/invoiceController');
 const { protect, authorize } = require('../middleware/auth');
+const {
+  checkSubscription,
+  checkInvoiceLimit,
+  checkFeatureAccess
+} = require('../middleware/subscription');
 
 // All routes are protected
 router.use(protect);
@@ -27,39 +32,50 @@ router.get('/public/:id', async (req, res) => {
 
 // Invoice routes
 router.route('/')
-  .get(authorize('admin', 'accountant', 'sales', 'viewer'), getInvoices)
-  .post(authorize('admin', 'accountant', 'sales'), createInvoice);
+  .get(authorize('admin', 'accountant', 'staff', 'viewer', 'client'), getInvoices)
+  .post(
+    authorize('admin', 'accountant', 'staff'),
+    checkSubscription(),
+    checkInvoiceLimit,
+    createInvoice
+  );
 
 router.route('/:id')
-  .get(authorize('admin', 'accountant', 'sales', 'viewer'), getInvoice)
-  .put(authorize('admin', 'accountant', 'sales'), updateInvoice)
-  .delete(authorize('admin', 'accountant'), deleteInvoice);
+  .get(authorize('admin', 'accountant', 'staff', 'viewer', 'client'), getInvoice)
+  .put(authorize('admin', 'accountant', 'staff'), updateInvoice)
+  .delete(authorize('super_admin'), deleteInvoice);
 
 // Invoice actions
-router.post('/:id/send', authorize('admin', 'accountant', 'sales'), sendInvoice);
-router.get('/:id/pdf', authorize('admin', 'accountant', 'sales', 'viewer'), getInvoicePDF);
-router.post('/:id/payment', authorize('admin', 'accountant', 'sales'), recordPayment);
+router.post('/:id/send', authorize('admin', 'accountant', 'staff'), checkSubscription(), sendInvoice);
+router.get('/:id/pdf', authorize('admin', 'accountant', 'staff', 'viewer', 'client'), checkSubscription(), getInvoicePDF);
+router.post('/:id/payment', authorize('admin', 'accountant', 'client'), recordPayment);
 router.post('/:id/reminder', authorize('admin', 'accountant'), sendReminder);
-router.post('/duplicate/:id', authorize('admin', 'accountant', 'sales'), duplicateInvoice);
+router.post(
+  '/duplicate/:id',
+  authorize('admin', 'accountant', 'staff'),
+  checkSubscription(),
+  checkInvoiceLimit,
+  duplicateInvoice
+);
 
 // Reports
-router.get('/outstanding', authorize('admin', 'accountant', 'sales', 'viewer'), getOutstanding);
+router.get('/outstanding', authorize('admin', 'accountant'), getOutstanding);
 router.get('/aging-report', authorize('admin', 'accountant'), getAgingReport);
 
 // Recurring invoices
-router.get('/recurring', authorize('admin', 'accountant', 'sales', 'viewer'), async (req, res) => {
+router.get('/recurring', authorize('admin', 'accountant', 'staff', 'viewer'), async (req, res) => {
   // Get all recurring invoices
 });
 
-router.post('/:id/recurring', authorize('admin', 'accountant', 'sales'), async (req, res) => {
+router.post('/:id/recurring', authorize('admin', 'accountant', 'staff'), checkFeatureAccess('recurring'), async (req, res) => {
   // Convert to recurring
 });
 
-router.put('/recurring/:id/pause', authorize('admin', 'accountant'), async (req, res) => {
+router.put('/recurring/:id/pause', authorize('admin', 'accountant'), checkFeatureAccess('recurring'), async (req, res) => {
   // Pause recurring invoice
 });
 
-router.put('/recurring/:id/resume', authorize('admin', 'accountant'), async (req, res) => {
+router.put('/recurring/:id/resume', authorize('admin', 'accountant'), checkFeatureAccess('recurring'), async (req, res) => {
   // Resume recurring invoice
 });
 

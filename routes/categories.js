@@ -6,16 +6,18 @@ const {
   updateCategory,
   deleteCategory
 } = require('../controllers/categoryController');
-const { protect } = require('../middleware/auth');
+const { protect, authorize } = require('../middleware/auth');
+const { checkFeatureAccess } = require('../middleware/subscription');
 
 router.use(protect);
+router.use(checkFeatureAccess('inventory'));
 
 router.route('/')
-  .get(getCategories)
-  .post(createCategory);
+  .get(authorize('admin', 'accountant', 'staff', 'viewer'), getCategories)
+  .post(authorize('admin', 'accountant'), createCategory);
 
 router.route('/:id')
-  .put(updateCategory)
-  .delete(deleteCategory);
+  .put(authorize('admin', 'accountant'), updateCategory)
+  .delete(authorize('admin', 'accountant'), deleteCategory);
 
 module.exports = router;

@@ -6,15 +6,28 @@ const {
   createPayment,
   refundPayment
 } = require('../controllers/paymentController');
+const {
+  initializeSubscriptionPayment,
+  initializeTemplatePayment,
+  verifyPayment,
+  paystackWebhook
+} = require('../controllers/monetizationController');
 const { protect, authorize } = require('../middleware/auth');
+
+// Paystack webhook (no auth)
+router.post('/webhook', paystackWebhook);
 
 router.use(protect);
 
-router.route('/')
-  .get(authorize('admin', 'accountant', 'sales'), getPayments)
-  .post(authorize('admin', 'accountant', 'sales'), createPayment);
+router.post('/initialize-subscription', authorize('admin', 'super_admin'), initializeSubscriptionPayment);
+router.post('/initialize-template', authorize('admin', 'accountant', 'staff'), initializeTemplatePayment);
+router.get('/verify/:reference', authorize('admin', 'accountant', 'staff', 'client'), verifyPayment);
 
-router.get('/:id', authorize('admin', 'accountant', 'sales'), getPayment);
+router.route('/')
+  .get(authorize('admin', 'accountant', 'client'), getPayments)
+  .post(authorize('admin', 'accountant'), createPayment);
+
+router.get('/:id', authorize('admin', 'accountant', 'client'), getPayment);
 router.post('/:id/refund', authorize('admin', 'accountant'), refundPayment);
 
 module.exports = router;

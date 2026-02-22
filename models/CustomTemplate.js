@@ -22,7 +22,15 @@ const CustomTemplateSchema = new mongoose.Schema({
   },
   category: {
     type: String,
-    default: 'custom'
+    default: 'CUSTOM'
+  },
+  isActive: {
+    type: Boolean,
+    default: true
+  },
+  previewImage: {
+    type: String,
+    default: ''
   },
   previewColor: {
     type: String,
@@ -43,6 +51,18 @@ const CustomTemplateSchema = new mongoose.Schema({
   price: {
     type: Number,
     default: 0
+  },
+  isIncludedInStarter: {
+    type: Boolean,
+    default: true
+  },
+  isIncludedInProfessional: {
+    type: Boolean,
+    default: true
+  },
+  isIncludedInEnterprise: {
+    type: Boolean,
+    default: true
   },
   templateStyle: {
     type: String,

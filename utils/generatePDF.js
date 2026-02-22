@@ -138,33 +138,58 @@ exports.invoice = async (invoice) => {
 
       // Summary
       const summaryY = Math.max(y + 20, 550);
-      
-      doc
-        .fontSize(10)
-        .text('Subtotal:', 350, summaryY)
-        .text(`${invoice.currency} ${invoice.subtotal.toFixed(2)}`, 450, summaryY, { width: 90, align: 'right' })
-        .text('Discount:', 350, summaryY + 15)
-        .text(`${invoice.currency} ${invoice.discount.amount.toFixed(2)}`, 450, summaryY + 15, { width: 90, align: 'right' })
-        .text('Tax:', 350, summaryY + 30)
-        .text(`${invoice.currency} ${invoice.tax.amount.toFixed(2)}`, 450, summaryY + 30, { width: 90, align: 'right' });
-      
+      const taxRateUsed = typeof invoice.taxRateUsed === 'number'
+        ? invoice.taxRateUsed
+        : (invoice.tax?.percentage || 0);
+      const taxAmount = typeof invoice.taxAmount === 'number'
+        ? invoice.taxAmount
+        : (invoice.tax?.amount || 0);
+      const taxLabel = invoice.taxName || invoice.tax?.description || 'Tax';
+
+      const summaryLines = [
+        { label: 'Subtotal', value: invoice.subtotal },
+        { label: 'Discount', value: invoice.discount?.amount || 0, skipWhenZero: true }
+      ];
+
+      if (taxAmount > 0 || taxRateUsed > 0) {
+        summaryLines.push({
+          label: `${taxLabel} (${taxRateUsed}%)`,
+          value: taxAmount
+        });
+      }
+
+      doc.fontSize(10);
+      summaryLines.forEach((line, index) => {
+        if (line.skipWhenZero && !line.value) {
+          return;
+        }
+        const offset = index * 15;
+        doc
+          .text(`${line.label}:`, 350, summaryY + offset)
+          .text(`${invoice.currency} ${Number(line.value).toFixed(2)}`, 450, summaryY + offset, { width: 90, align: 'right' });
+      });
+
+      const lineOffset = summaryLines.filter(line => !(line.skipWhenZero && !line.value)).length * 15;
+      const dividerY = summaryY + lineOffset;
+
       // Horizontal line
-      doc.moveTo(350, summaryY + 45).lineTo(500, summaryY + 45).stroke();
-      
+      doc.moveTo(350, dividerY).lineTo(500, dividerY).stroke();
+
       doc
         .fontSize(12)
         .font('Helvetica-Bold')
-        .text('Total:', 350, summaryY + 55)
-        .text(`${invoice.currency} ${invoice.total.toFixed(2)}`, 450, summaryY + 55, { width: 90, align: 'right' })
+        .text('Total:', 350, dividerY + 10)
+        .text(`${invoice.currency} ${invoice.total.toFixed(2)}`, 450, dividerY + 10, { width: 90, align: 'right' })
         .font('Helvetica');
 
       // Amount paid and balance
+      const totalsFooterY = dividerY + 35;
       doc
         .fontSize(10)
-        .text('Amount Paid:', 350, summaryY + 80)
-        .text(`${invoice.currency} ${invoice.amountPaid.toFixed(2)}`, 450, summaryY + 80, { width: 90, align: 'right' })
-        .text('Balance Due:', 350, summaryY + 95)
-        .text(`${invoice.currency} ${invoice.balance.toFixed(2)}`, 450, summaryY + 95, { width: 90, align: 'right' });
+        .text('Amount Paid:', 350, totalsFooterY)
+        .text(`${invoice.currency} ${invoice.amountPaid.toFixed(2)}`, 450, totalsFooterY, { width: 90, align: 'right' })
+        .text('Balance Due:', 350, totalsFooterY + 15)
+        .text(`${invoice.currency} ${invoice.balance.toFixed(2)}`, 450, totalsFooterY + 15, { width: 90, align: 'right' });
 
       // Notes and terms
       if (invoice.notes || invoice.terms) {
@@ -274,8 +299,18 @@ exports.receipt = async (receipt) => {
       doc.moveDown(0.5);
 
       // Summary
+      const taxRateUsed = typeof receipt.taxRateUsed === 'number'
+        ? receipt.taxRateUsed
+        : (receipt.tax?.percentage || 0);
+      const taxAmount = typeof receipt.taxAmount === 'number'
+        ? receipt.taxAmount
+        : (receipt.tax?.amount || 0);
+      const taxLabel = receipt.taxName || receipt.tax?.description || 'Tax';
+
       doc.text(`Subtotal: ${currency} ${receipt.subtotal.toFixed(2)}`);
-      doc.text(`Tax: ${currency} ${receipt.tax.amount.toFixed(2)}`);
+      if (taxAmount > 0 || taxRateUsed > 0) {
+        doc.text(`${taxLabel} (${taxRateUsed}%): ${currency} ${taxAmount.toFixed(2)}`);
+      }
       doc.text(`Total: ${currency} ${receipt.total.toFixed(2)}`);
       doc.moveDown(0.5);
       doc.text(`Payment Method: ${receipt.paymentMethod}`);

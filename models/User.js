@@ -27,13 +27,17 @@ const UserSchema = new mongoose.Schema({
   },
   role: {
     type: String,
-    enum: ['admin', 'accountant', 'sales', 'viewer'],
-    default: 'sales'
+    enum: ['super_admin', 'admin', 'accountant', 'staff', 'client', 'sales', 'viewer'],
+    default: 'staff'
   },
   business: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Business',
     required: true
+  },
+  customer: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Customer'
   },
   phone: {
     type: String,
@@ -87,13 +91,44 @@ const UserSchema = new mongoose.Schema({
       delete: { type: Boolean, default: false }
     },
     reports: {
-      view: { type: Boolean, default: true },
+      view: { type: Boolean, default: false },
       export: { type: Boolean, default: false }
     },
     settings: {
       view: { type: Boolean, default: false },
       update: { type: Boolean, default: false }
     }
+  },
+  plan: {
+    type: String,
+    enum: ['starter', 'professional', 'enterprise'],
+    default: 'starter'
+  },
+  subscriptionStatus: {
+    type: String,
+    enum: ['trial', 'active', 'expired'],
+    default: 'active'
+  },
+  trialEndsAt: Date,
+  subscriptionEndsAt: Date,
+  paystackCustomerCode: String,
+  paystackSubscriptionCode: String,
+  invoiceCountThisMonth: {
+    type: Number,
+    default: 0
+  },
+  invoiceLimit: {
+    type: Number,
+    default: 100
+  },
+  invoiceCountResetAt: Date,
+  purchasedTemplates: {
+    type: [String],
+    default: []
+  },
+  hasLifetimeTemplates: {
+    type: Boolean,
+    default: false
   }
 }, {
   timestamps: true
@@ -102,11 +137,12 @@ const UserSchema = new mongoose.Schema({
 // Encrypt password using bcrypt
 UserSchema.pre('save', async function(next) {
   if (!this.isModified('password')) {
-    next();
+    return next();
   }
 
   const salt = await bcrypt.genSalt(10);
   this.password = await bcrypt.hash(this.password, salt);
+  next();
 });
 
 // Sign JWT and return

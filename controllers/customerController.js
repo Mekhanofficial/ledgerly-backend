@@ -1,7 +1,17 @@
 const Customer = require('../models/Customer');
 const Invoice = require('../models/Invoice');
+const Payment = require('../models/Payment');
 const ErrorResponse = require('../utils/errorResponse');
 const asyncHandler = require('../utils/asyncHandler');
+const {
+  normalizeRole,
+  isStaff,
+  isClient,
+  isSuperAdmin,
+  isAdmin
+} = require('../utils/rolePermissions');
+
+const getEffectiveRole = (req) => req.user?.effectiveRole || normalizeRole(req.user?.role);
 
 // @desc    Get all customers
 // @route   GET /api/v1/customers
@@ -9,15 +19,32 @@ const asyncHandler = require('../utils/asyncHandler');
 exports.getCustomers = asyncHandler(async (req, res, next) => {
   const { search, type, isActive, page = 1, limit = 20 } = req.query;
   
+  const effectiveRole = getEffectiveRole(req);
   let query = { business: req.user.business };
-  
+  const andFilters = [];
+
   if (search) {
-    query.$or = [
-      { name: { $regex: search, $options: 'i' } },
-      { email: { $regex: search, $options: 'i' } },
-      { phone: { $regex: search, $options: 'i' } },
-      { company: { $regex: search, $options: 'i' } }
-    ];
+    andFilters.push({
+      $or: [
+        { name: { $regex: search, $options: 'i' } },
+        { email: { $regex: search, $options: 'i' } },
+        { phone: { $regex: search, $options: 'i' } },
+        { company: { $regex: search, $options: 'i' } }
+      ]
+    });
+  }
+
+  if (isStaff(effectiveRole)) {
+    andFilters.push({
+      $or: [
+        { assignedTo: req.user.id },
+        { createdBy: req.user.id }
+      ]
+    });
+  }
+
+  if (andFilters.length > 0) {
+    query.$and = andFilters;
   }
   
   if (type) query.customerType = type;
@@ -51,6 +78,18 @@ exports.getCustomer = asyncHandler(async (req, res, next) => {
   if (!customer) {
     return next(new ErrorResponse(`Customer not found with id ${req.params.id}`, 404));
   }
+
+  const effectiveRole = getEffectiveRole(req);
+  if (isClient(effectiveRole)) {
+    return next(new ErrorResponse('Not authorized to access customers', 403));
+  }
+  if (
+    isStaff(effectiveRole) &&
+    customer.assignedTo?.toString() !== req.user.id &&
+    customer.createdBy?.toString() !== req.user.id
+  ) {
+    return next(new ErrorResponse('Not authorized to access this customer', 403));
+  }
   
   res.status(200).json({
     success: true,
@@ -62,8 +101,19 @@ exports.getCustomer = asyncHandler(async (req, res, next) => {
 // @route   POST /api/v1/customers
 // @access  Private
 exports.createCustomer = asyncHandler(async (req, res, next) => {
+  const effectiveRole = getEffectiveRole(req);
+  if (isClient(effectiveRole)) {
+    return next(new ErrorResponse('Not authorized to create customers', 403));
+  }
+
   req.body.business = req.user.business;
   req.body.createdBy = req.user.id;
+
+  if (isStaff(effectiveRole)) {
+    req.body.assignedTo = req.user.id;
+  } else if (req.body.assignedTo && !(isSuperAdmin(effectiveRole) || isAdmin(effectiveRole))) {
+    delete req.body.assignedTo;
+  }
   
   const customer = await Customer.create(req.body);
   
@@ -84,6 +134,22 @@ exports.updateCustomer = asyncHandler(async (req, res, next) => {
   
   if (!customer) {
     return next(new ErrorResponse(`Customer not found with id ${req.params.id}`, 404));
+  }
+
+  const effectiveRole = getEffectiveRole(req);
+  if (isClient(effectiveRole)) {
+    return next(new ErrorResponse('Not authorized to update customers', 403));
+  }
+  if (
+    isStaff(effectiveRole) &&
+    customer.assignedTo?.toString() !== req.user.id &&
+    customer.createdBy?.toString() !== req.user.id
+  ) {
+    return next(new ErrorResponse('Not authorized to update this customer', 403));
+  }
+
+  if (req.body.assignedTo !== undefined && !(isSuperAdmin(effectiveRole) || isAdmin(effectiveRole))) {
+    return next(new ErrorResponse('Only admins can reassign customers', 403));
   }
   
   req.body.updatedBy = req.user.id;
@@ -110,6 +176,11 @@ exports.deleteCustomer = asyncHandler(async (req, res, next) => {
   
   if (!customer) {
     return next(new ErrorResponse(`Customer not found with id ${req.params.id}`, 404));
+  }
+
+  const effectiveRole = getEffectiveRole(req);
+  if (!(isSuperAdmin(effectiveRole) || isAdmin(effectiveRole))) {
+    return next(new ErrorResponse('Only admins can delete customers', 403));
   }
   
   // Check if customer has invoices

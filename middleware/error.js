@@ -1,5 +1,12 @@
 const ErrorResponse = require('../utils/errorResponse');
 
+const parsePositiveInt = (value, fallback) => {
+  const parsed = Number.parseInt(String(value ?? ''), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+};
+
+const MAX_DOCUMENT_FILE_SIZE_MB = parsePositiveInt(process.env.MAX_DOCUMENT_FILE_SIZE_MB, 50);
+
 const errorHandler = (err, req, res, next) => {
   let error = { ...err };
   error.message = err.message;
@@ -35,6 +42,17 @@ const errorHandler = (err, req, res, next) => {
   if (err.name === 'TokenExpiredError') {
     const message = 'Token expired';
     error = new ErrorResponse(message, 401);
+  }
+
+  if (err.name === 'MulterError') {
+    if (err.code === 'LIMIT_FILE_SIZE') {
+      error = new ErrorResponse(
+        `File is too large. Maximum allowed size is ${MAX_DOCUMENT_FILE_SIZE_MB}MB.`,
+        400
+      );
+    } else {
+      error = new ErrorResponse(err.message || 'File upload failed', 400);
+    }
   }
 
   res.status(error.statusCode || 500).json({

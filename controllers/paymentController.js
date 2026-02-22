@@ -1,8 +1,12 @@
 const Payment = require('../models/Payment');
 const Invoice = require('../models/Invoice');
+const Customer = require('../models/Customer');
 const AuditLog = require('../models/AuditLog');
 const ErrorResponse = require('../utils/errorResponse');
 const asyncHandler = require('../utils/asyncHandler');
+const { normalizeRole, isClient } = require('../utils/rolePermissions');
+
+const getEffectiveRole = (req) => req.user?.effectiveRole || normalizeRole(req.user?.role);
 
 const logAuditEntry = async (req, action, resource, details = {}) => {
   await AuditLog.create({
@@ -20,6 +24,14 @@ const logAuditEntry = async (req, action, resource, details = {}) => {
 exports.getPayments = asyncHandler(async (req, res) => {
   const { startDate, endDate, customer, status, paymentMethod, invoice } = req.query;
   const query = { business: req.user.business };
+  const effectiveRole = getEffectiveRole(req);
+
+  if (isClient(effectiveRole)) {
+    if (!req.user.customer) {
+      throw new ErrorResponse('Client account is not linked to a customer', 403);
+    }
+    query.customer = req.user.customer;
+  }
 
   if (startDate || endDate) {
     query.paymentDate = {};
@@ -60,6 +72,16 @@ exports.getPayment = asyncHandler(async (req, res, next) => {
 
   if (!payment) {
     return next(new ErrorResponse('Payment not found', 404));
+  }
+
+  const effectiveRole = getEffectiveRole(req);
+  if (isClient(effectiveRole)) {
+    if (!req.user.customer) {
+      return next(new ErrorResponse('Client account is not linked to a customer', 403));
+    }
+    if (payment.customer?.toString() !== req.user.customer.toString()) {
+      return next(new ErrorResponse('Not authorized to access this payment', 403));
+    }
   }
 
   res.status(200).json({
@@ -113,6 +135,9 @@ exports.createPayment = asyncHandler(async (req, res, next) => {
   });
 
   await logAuditEntry(req, 'create-payment', 'Payment', { paymentId: payment._id, invoice: invoice._id, amount });
+  if (invoice.customer) {
+    await Customer.updateCustomerStats(invoice.customer);
+  }
 
   res.status(201).json({
     success: true,
@@ -159,6 +184,9 @@ exports.refundPayment = asyncHandler(async (req, res, next) => {
       invoice.status = 'partial';
     }
     await invoice.save();
+    if (invoice.customer) {
+      await Customer.updateCustomerStats(invoice.customer);
+    }
   }
 
   await logAuditEntry(req, 'refund-payment', 'Payment', { paymentId: payment._id, refundAmount });

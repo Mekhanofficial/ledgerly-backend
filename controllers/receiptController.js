@@ -8,6 +8,8 @@ const ErrorResponse = require('../utils/errorResponse');
 const asyncHandler = require('../utils/asyncHandler');
 const sendEmail = require('../utils/email');
 const generatePDF = require('../utils/generatePDF');
+const { calculateInvoiceTotals, toNumber } = require('../utils/invoiceCalculator');
+const { getTaxSettings } = require('../utils/taxSettings');
 
 const ensureWalkInCustomer = async (req, fallbackName = 'Walk-in Customer') => {
   const existing = await Customer.findOne({
@@ -102,7 +104,6 @@ exports.createReceipt = asyncHandler(async (req, res, next) => {
   const { customer, items, paymentMethod, amountPaid, notes, templateStyle } = req.body;
   
   // Calculate totals
-  let subtotal = 0;
   const processedItems = [];
   
   for (const item of items) {
@@ -113,21 +114,17 @@ exports.createReceipt = asyncHandler(async (req, res, next) => {
     
     const unitPrice = item.unitPrice || (product ? product.sellingPrice : 0);
     const quantity = item.quantity || 1;
-    const taxRate = item.taxRate || (product ? product.taxRate : 0);
-    
     const itemTotal = unitPrice * quantity;
-    const taxAmount = itemTotal * (taxRate / 100);
-    const total = itemTotal + taxAmount;
-    
-    subtotal += itemTotal;
     
     processedItems.push({
       description: item.description || (product ? product.name : 'Item'),
       quantity,
       unitPrice,
-      total,
-      taxRate,
-      taxAmount
+      total: itemTotal,
+      taxRate: 0,
+      discount: 0,
+      discountType: 'fixed',
+      taxAmount: 0
     });
     
     // Update inventory if product exists and tracks inventory
@@ -149,9 +146,24 @@ exports.createReceipt = asyncHandler(async (req, res, next) => {
     }
   }
   
-  const tax = subtotal * 0.1; // Default 10% tax
-  const total = subtotal + tax;
-  const change = amountPaid - total;
+  const taxSettings = await getTaxSettings();
+  const taxRateUsed = taxSettings.taxEnabled ? toNumber(taxSettings.taxRate, 0) : 0;
+  const taxName = taxSettings.taxName || 'VAT';
+  let computedTotals;
+  try {
+    computedTotals = calculateInvoiceTotals({
+      items: processedItems,
+      taxRateUsed,
+      amountPaid
+    });
+  } catch (error) {
+    return next(new ErrorResponse(error.message, 400));
+  }
+  const subtotal = computedTotals.subtotal;
+  const taxAmount = computedTotals.taxAmount;
+  const total = computedTotals.total;
+  const paidAmount = toNumber(amountPaid, 0);
+  const change = paidAmount - total;
   
   // Handle customer
   let customerId = customer;
@@ -192,24 +204,26 @@ exports.createReceipt = asyncHandler(async (req, res, next) => {
     receipt = await Receipt.create({
       business: req.user.business,
       customer: customerId,
-      items: processedItems,
+      items: computedTotals.items,
       subtotal,
       tax: {
-        amount: tax,
-        percentage: 10
+        amount: taxAmount,
+        percentage: taxRateUsed,
+        description: taxName
       },
-    total,
-    amountPaid,
-    change,
-    paymentMethod,
-    cashier: req.user.id,
-    notes,
-    paymentMethod,
-    cashier: req.user.id,
-    notes,
-    receiptNumber,
-    templateStyle: templateStyle || req.body.templateId || req.body.template,
-    createdBy: req.user.id
+      taxName,
+      taxRateUsed,
+      taxAmount,
+      isTaxOverridden: false,
+      total,
+      amountPaid: paidAmount,
+      change,
+      paymentMethod,
+      cashier: req.user.id,
+      notes,
+      receiptNumber,
+      templateStyle: templateStyle || req.body.templateId || req.body.template,
+      createdBy: req.user.id
     });
   } catch (error) {
     console.error('Receipt creation failed', {
@@ -264,6 +278,10 @@ exports.createReceiptFromInvoice = asyncHandler(async (req, res, next) => {
     })),
     subtotal: invoice.subtotal,
     tax: invoice.tax,
+    taxName: invoice.taxName || invoice.tax?.description,
+    taxRateUsed: invoice.taxRateUsed ?? invoice.tax?.percentage,
+    taxAmount: invoice.taxAmount ?? invoice.tax?.amount,
+    isTaxOverridden: invoice.isTaxOverridden,
     total: invoice.total,
     amountPaid: invoice.amountPaid,
     paymentMethod: invoice.paymentMethod,

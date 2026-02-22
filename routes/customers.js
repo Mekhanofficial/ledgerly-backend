@@ -14,15 +14,15 @@ const { protect, authorize } = require('../middleware/auth');
 router.use(protect);
 
 router.route('/')
-  .get(authorize('admin', 'accountant', 'sales', 'viewer'), getCustomers)
-  .post(authorize('admin', 'accountant', 'sales'), createCustomer);
+  .get(authorize('admin', 'accountant', 'staff', 'viewer'), getCustomers)
+  .post(authorize('admin', 'staff'), createCustomer);
 
 router.route('/:id')
-  .get(authorize('admin', 'accountant', 'sales', 'viewer'), getCustomer)
-  .put(authorize('admin', 'accountant', 'sales'), updateCustomer)
-  .delete(authorize('admin', 'accountant'), deleteCustomer);
+  .get(authorize('admin', 'accountant', 'staff', 'viewer'), getCustomer)
+  .put(authorize('admin', 'staff'), updateCustomer)
+  .delete(authorize('admin'), deleteCustomer);
 
-router.get('/:id/history', authorize('admin', 'accountant', 'sales', 'viewer'), getCustomerHistory);
-router.post('/import', authorize('admin', 'accountant'), importCustomers);
+router.get('/:id/history', authorize('admin', 'accountant', 'staff'), getCustomerHistory);
+router.post('/import', authorize('admin'), importCustomers);
 
 module.exports = router;

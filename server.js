@@ -7,6 +7,7 @@ const xss = require('xss-clean');
 const hpp = require('hpp');
 const rateLimit = require('express-rate-limit');
 const connectDB = require('./config/db');
+const { resetMonthlyInvoiceCounts } = require('./utils/subscriptionService');
 
 // Load env vars
 dotenv.config();
@@ -16,8 +17,13 @@ connectDB();
 
 const app = express();
 
-// Body parser
-app.use(express.json({ limit: '50mb' }));
+// Body parser (capture raw body for webhook verification)
+app.use(express.json({
+  limit: '50mb',
+  verify: (req, res, buf) => {
+    req.rawBody = buf;
+  }
+}));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // Enable CORS
@@ -102,6 +108,10 @@ const reports = require('./routes/reports');
 const team = require('./routes/team');
 const settings = require('./routes/settings');
 const templates = require('./routes/templates');
+const superAdmin = require('./routes/superAdmin');
+const taxSettings = require('./routes/taxSettings');
+const billing = require('./routes/billing');
+const documents = require('./routes/documents');
 
 // Mount routers
 app.use('/api/v1/auth', auth);
@@ -118,6 +128,10 @@ app.use('/api/v1/reports', reports);
 app.use('/api/v1/team', team);
 app.use('/api/v1/settings', settings);
 app.use('/api/v1/templates', templates);
+app.use('/api/v1/super-admin', superAdmin);
+app.use('/api/v1/tax-settings', taxSettings);
+app.use('/api/v1/billing', billing);
+app.use('/api/v1/documents', documents);
 
 // Health check
 app.get('/health', (req, res) => {
@@ -145,6 +159,22 @@ const PORT = process.env.PORT || 7000;
 const server = app.listen(PORT, () => {
   console.log(`Server running in ${process.env.NODE_ENV} mode on port ${PORT}`);
 });
+
+// Monthly invoice count reset (runs daily)
+const scheduleInvoiceReset = () => {
+  const runReset = async () => {
+    try {
+      await resetMonthlyInvoiceCounts();
+    } catch (error) {
+      console.error('Failed to reset invoice counts:', error?.message || error);
+    }
+  };
+
+  runReset();
+  setInterval(runReset, 24 * 60 * 60 * 1000);
+};
+
+scheduleInvoiceReset();
 
 // Handle unhandled promise rejections
 process.on('unhandledRejection', (err, promise) => {

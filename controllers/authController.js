@@ -5,40 +5,50 @@ const asyncHandler = require('../utils/asyncHandler');
 const sendEmail = require('../utils/email');
 const crypto = require('crypto');
 const path = require('path');
+const { getDefaultPermissions } = require('../utils/rolePermissions');
+const { startTrialForUser } = require('../utils/subscriptionService');
 
 // @desc    Register user
 // @route   POST /api/v1/auth/register
 // @access  Public
 exports.register = asyncHandler(async (req, res, next) => {
-  const { name, email, password, phone, businessName } = req.body;
+  const { name, email, password, phone, businessName, currency, currencyCode } = req.body;
+  const normalizedEmail = email ? String(email).trim().toLowerCase() : '';
 
   // Check if user exists
-  const userExists = await User.findOne({ email });
+  const userExists = await User.findOne({ email: normalizedEmail });
   if (userExists) {
     return next(new ErrorResponse('User already exists', 400));
   }
 
   // Create business
+  const resolvedCurrency = (currencyCode || currency || 'USD').toString().trim().toUpperCase();
+
   const business = await Business.create({
     name: businessName,
-    email,
+    email: normalizedEmail,
     phone,
+    currency: resolvedCurrency,
     owner: null // Will be updated after user creation
   });
 
   // Create user
   const user = await User.create({
     name,
-    email,
+    email: normalizedEmail,
     password,
     phone,
     business: business._id,
-    role: 'admin'
+    role: 'admin',
+    permissions: getDefaultPermissions('admin')
   });
 
   // Update business owner
   business.owner = user._id;
   await business.save();
+
+  // Start free trial for new accounts
+  await startTrialForUser({ user, business });
 
   // Generate verification token
   const verificationToken = crypto.randomBytes(20).toString('hex');
@@ -69,14 +79,15 @@ exports.register = asyncHandler(async (req, res, next) => {
 // @access  Public
 exports.login = asyncHandler(async (req, res, next) => {
   const { email, password } = req.body;
+  const normalizedEmail = email ? String(email).trim().toLowerCase() : '';
 
   // Validate email & password
-  if (!email || !password) {
+  if (!normalizedEmail || !password) {
     return next(new ErrorResponse('Please provide an email and password', 400));
   }
 
   // Check for user
-  const user = await User.findOne({ email }).select('+password');
+  const user = await User.findOne({ email: normalizedEmail }).select('+password');
   
   if (!user) {
     return next(new ErrorResponse('Invalid credentials', 401));
@@ -121,7 +132,7 @@ exports.logout = asyncHandler(async (req, res, next) => {
 // @access  Private
 exports.getMe = asyncHandler(async (req, res, next) => {
   const user = await User.findById(req.user.id)
-    .populate('business', 'name logo email phone address subscription');
+    .populate('business', 'name logo email phone address subscription currency');
 
   res.status(200).json({
     success: true,
@@ -190,8 +201,9 @@ exports.forgotPassword = asyncHandler(async (req, res, next) => {
   const resetToken = user.getResetPasswordToken();
   await user.save();
 
-  // Create reset url
-  const resetUrl = `${req.protocol}://${req.get('host')}/api/v1/auth/resetpassword/${resetToken}`;
+  // Create reset url (frontend)
+  const baseUrl = process.env.FRONTEND_URL || process.env.REACT_APP_URL || `${req.protocol}://${req.get('host')}`;
+  const resetUrl = `${baseUrl}/reset-password/${resetToken}`;
 
   try {
     await sendEmail({

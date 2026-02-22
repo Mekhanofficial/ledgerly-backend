@@ -141,10 +141,11 @@ const BusinessSchema = new mongoose.Schema({
     },
     status: {
       type: String,
-      enum: ['active', 'past_due', 'canceled', 'incomplete'],
+      enum: ['trial', 'active', 'expired', 'past_due', 'canceled', 'incomplete'],
       default: 'active'
     },
     currentPeriodEnd: Date,
+    trialEndsAt: Date,
     stripeCustomerId: String,
     stripeSubscriptionId: String
   },

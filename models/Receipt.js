@@ -36,6 +36,22 @@ const ReceiptSchema = new mongoose.Schema({
     amount: Number,
     percentage: Number
   },
+  taxName: {
+    type: String,
+    default: 'VAT'
+  },
+  taxRateUsed: {
+    type: Number,
+    default: 0
+  },
+  taxAmount: {
+    type: Number,
+    default: 0
+  },
+  isTaxOverridden: {
+    type: Boolean,
+    default: false
+  },
   discount: {
     amount: Number,
     percentage: Number

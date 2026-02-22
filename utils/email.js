@@ -182,7 +182,7 @@ const templates = {
 // Send email function
 const sendEmail = async (options) => {
   const message = {
-    from: process.env.EMAIL_FROM,
+    from: process.env.EMAIL_FROM || process.env.EMAIL_USER || 'Ledgerly <no-reply@ledgerly.com>',
     to: options.to,
     subject: options.subject,
     text: options.text || options.subject,

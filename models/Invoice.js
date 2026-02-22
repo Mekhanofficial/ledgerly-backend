@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { calculateInvoiceTotals, toNumber } = require('../utils/invoiceCalculator');
 
 const InvoiceSchema = new mongoose.Schema({
   business: {
@@ -96,6 +97,22 @@ const InvoiceSchema = new mongoose.Schema({
       default: 0
     },
     description: String
+  },
+  taxName: {
+    type: String,
+    default: 'VAT'
+  },
+  taxRateUsed: {
+    type: Number,
+    default: 0
+  },
+  taxAmount: {
+    type: Number,
+    default: 0
+  },
+  isTaxOverridden: {
+    type: Boolean,
+    default: false
   },
   shipping: {
     amount: {
@@ -239,44 +256,28 @@ InvoiceSchema.pre('save', async function(next) {
     this.estimateNumber = `EST-${String(lastNumber + 1).padStart(5, '0')}`;
   }
   
-  // Calculate item totals
-  this.items.forEach(item => {
-    let itemTotal = item.unitPrice * item.quantity;
-    
-    // Apply discount
-    if (item.discount > 0) {
-      if (item.discountType === 'percentage') {
-        itemTotal -= itemTotal * (item.discount / 100);
-      } else {
-        itemTotal -= item.discount;
-      }
-    }
-    
-    // Calculate tax
-    item.taxAmount = itemTotal * (item.taxRate / 100);
-    item.total = itemTotal + item.taxAmount;
+  const computed = calculateInvoiceTotals({
+    items: this.items,
+    discount: this.discount,
+    shipping: this.shipping,
+    taxRateUsed: this.taxRateUsed ?? this.tax?.percentage ?? 0,
+    taxAmountOverride: this.isTaxOverridden ? this.taxAmount ?? this.tax?.amount : null,
+    isTaxOverridden: Boolean(this.isTaxOverridden),
+    amountPaid: this.amountPaid
   });
-  
-  // Calculate subtotal
-  this.subtotal = this.items.reduce((sum, item) => sum + (item.unitPrice * item.quantity), 0);
-  
-  // Apply invoice-level discount
-  let discountAmount = 0;
-  if (this.discount.type === 'percentage') {
-    discountAmount = this.subtotal * (this.discount.percentage / 100);
-  } else {
-    discountAmount = this.discount.amount;
-  }
-  
-  // Calculate tax
-  let taxableAmount = this.subtotal - discountAmount;
-  this.tax.amount = taxableAmount * (this.tax.percentage / 100);
-  
-  // Calculate total
-  this.total = this.subtotal - discountAmount + this.tax.amount + (this.shipping?.amount || 0);
-  
-  // Calculate balance
-  this.balance = this.total - this.amountPaid;
+
+  this.items = computed.items;
+  this.subtotal = computed.subtotal;
+  this.taxRateUsed = toNumber(this.taxRateUsed ?? computed.taxRateUsed, computed.taxRateUsed);
+  this.taxAmount = computed.taxAmount;
+  this.tax = {
+    ...(this.tax || {}),
+    amount: computed.taxAmount,
+    percentage: this.taxRateUsed,
+    description: this.taxName || this.tax?.description
+  };
+  this.total = computed.total;
+  this.balance = computed.balance;
   
   // Update status
   if (this.status !== 'cancelled' && this.status !== 'void') {

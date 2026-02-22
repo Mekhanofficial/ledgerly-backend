@@ -9,6 +9,60 @@ const ErrorResponse = require('../utils/errorResponse');
 const asyncHandler = require('../utils/asyncHandler');
 const sendEmail = require('../utils/email');
 const generatePDF = require('../utils/generatePDF');
+const { calculateInvoiceTotals, toNumber, roundMoney } = require('../utils/invoiceCalculator');
+const { getTaxSettings } = require('../utils/taxSettings');
+const { normalizePlanId } = require('../utils/planConfig');
+const { resolveBillingOwner, resetInvoiceCountIfNeeded, resolveEffectivePlan } = require('../utils/subscriptionService');
+const User = require('../models/User');
+const {
+  normalizeRole,
+  isSuperAdmin,
+  isStaff,
+  isClient,
+  isAccountant
+} = require('../utils/rolePermissions');
+
+const isMultiCurrencyAllowed = (plan) =>
+  ['professional', 'enterprise'].includes(normalizePlanId(plan));
+
+const resolveInvoiceCurrency = (business, requestedCurrency) => {
+  const businessCurrency = (business?.currency || 'USD').toString().trim().toUpperCase();
+  const requested = requestedCurrency ? String(requestedCurrency).trim().toUpperCase() : '';
+  return requested || businessCurrency;
+};
+
+const getEffectiveRole = (req) => req.user?.effectiveRole || normalizeRole(req.user?.role);
+
+const hasValue = (value) => value !== undefined && value !== null;
+
+const resolveOverrideInput = (payload = {}) => {
+  const overrideRate = hasValue(payload.taxRateUsed)
+    ? payload.taxRateUsed
+    : hasValue(payload.taxRate)
+      ? payload.taxRate
+      : hasValue(payload.tax?.percentage)
+        ? payload.tax.percentage
+        : undefined;
+  const overrideAmount = hasValue(payload.taxAmount)
+    ? payload.taxAmount
+    : hasValue(payload.tax?.amount)
+      ? payload.tax.amount
+      : undefined;
+  const overrideName = hasValue(payload.taxName)
+    ? payload.taxName
+    : hasValue(payload.tax?.description)
+      ? payload.tax.description
+      : undefined;
+  const overrideFlag = hasValue(payload.isTaxOverridden) ? payload.isTaxOverridden : false;
+
+  return {
+    overrideRate,
+    overrideAmount,
+    overrideName,
+    overrideFlag,
+    overrideRequested: hasValue(overrideRate) || hasValue(overrideAmount) || Boolean(overrideFlag)
+  };
+};
 
 // @desc    Get all invoices
 // @route   GET /api/v1/invoices
@@ -27,6 +81,18 @@ exports.getInvoices = asyncHandler(async (req, res, next) => {
 
   // Build query
   let query = { business: req.user.business };
+  const effectiveRole = getEffectiveRole(req);
+
+  if (isStaff(effectiveRole)) {
+    query.createdBy = req.user.id;
+  }
+
+  if (isClient(effectiveRole)) {
+    if (!req.user.customer) {
+      return next(new ErrorResponse('Client account is not linked to a customer', 403));
+    }
+    query.customer = req.user.customer;
+  }
 
   // Apply filters
   if (status) query.status = status;
@@ -106,6 +172,19 @@ exports.getInvoice = asyncHandler(async (req, res, next) => {
     return next(new ErrorResponse('Not authorized to access this invoice', 403));
   }
 
+  const effectiveRole = getEffectiveRole(req);
+  if (isStaff(effectiveRole) && invoice.createdBy?.toString() !== req.user.id) {
+    return next(new ErrorResponse('Not authorized to access this invoice', 403));
+  }
+  if (isClient(effectiveRole)) {
+    if (!req.user.customer) {
+      return next(new ErrorResponse('Client account is not linked to a customer', 403));
+    }
+    if (invoice.customer?.toString() !== req.user.customer.toString()) {
+      return next(new ErrorResponse('Not authorized to access this invoice', 403));
+    }
+  }
+
   res.status(200).json({
     success: true,
     data: invoice
@@ -116,9 +195,22 @@ exports.getInvoice = asyncHandler(async (req, res, next) => {
 // @route   POST /api/v1/invoices
 // @access  Private
 exports.createInvoice = asyncHandler(async (req, res, next) => {
+  const business = await Business.findById(req.user.business);
+  if (!business) {
+    return next(new ErrorResponse('Business not found', 404));
+  }
+
+  const currency = resolveInvoiceCurrency(business, req.body.currency);
+  const billingOwner = req.billingOwner || await resolveBillingOwner(req.user);
+  const effectivePlan = resolveEffectivePlan(billingOwner);
+  if (!isMultiCurrencyAllowed(effectivePlan) && currency !== business.currency) {
+    return next(new ErrorResponse('Multi-currency is available on Professional and Enterprise plans.', 403));
+  }
+
   // Add business to req.body
   req.body.business = req.user.business;
   req.body.createdBy = req.user.id;
+  req.body.currency = currency;
 
   // Validate customer
   const customer = await Customer.findOne({
@@ -151,12 +243,89 @@ exports.createInvoice = asyncHandler(async (req, res, next) => {
 
   // Set due date if not provided
   if (!req.body.dueDate) {
-    const business = await Business.findById(req.user.business);
     const dueDays = business.invoiceSettings.dueDays || 30;
     req.body.dueDate = new Date(Date.now() + dueDays * 24 * 60 * 60 * 1000);
   }
 
+  const taxSettings = await getTaxSettings();
+  const {
+    overrideRate,
+    overrideAmount,
+    overrideName,
+    overrideRequested
+  } = resolveOverrideInput(req.body);
+
+  if (overrideRequested && !taxSettings.allowManualOverride) {
+    return next(new ErrorResponse('Manual tax override is not enabled', 403));
+  }
+
+  let taxRateUsed = taxSettings.taxEnabled ? toNumber(taxSettings.taxRate, 0) : 0;
+  let taxAmountOverride = null;
+  let isTaxOverridden = false;
+  let taxName = taxSettings.taxName || 'VAT';
+
+  if (taxSettings.taxEnabled && overrideRequested) {
+    isTaxOverridden = true;
+    if (hasValue(overrideRate)) {
+      taxRateUsed = toNumber(overrideRate, taxRateUsed);
+    }
+    if (hasValue(overrideAmount)) {
+      taxAmountOverride = overrideAmount;
+    }
+    if (overrideName) {
+      taxName = overrideName;
+    }
+  }
+
+  if (!taxSettings.taxEnabled) {
+    taxRateUsed = 0;
+    taxAmountOverride = 0;
+    isTaxOverridden = false;
+  }
+
+  let computedTotals;
+  try {
+    computedTotals = calculateInvoiceTotals({
+      items: req.body.items,
+      discount: req.body.discount,
+      shipping: req.body.shipping,
+      taxRateUsed,
+      taxAmountOverride,
+      isTaxOverridden,
+      amountPaid: req.body.amountPaid
+    });
+  } catch (error) {
+    return next(new ErrorResponse(error.message, 400));
+  }
+
+  req.body.items = computedTotals.items;
+  req.body.subtotal = computedTotals.subtotal;
+  req.body.taxRateUsed = taxRateUsed;
+  req.body.taxAmount = computedTotals.taxAmount;
+  req.body.isTaxOverridden = isTaxOverridden;
+  req.body.taxName = taxName;
+  req.body.tax = {
+    ...(req.body.tax || {}),
+    amount: computedTotals.taxAmount,
+    percentage: taxRateUsed,
+    description: taxName
+  };
+  req.body.total = computedTotals.total;
+  req.body.amountPaid = computedTotals.amountPaid;
+  req.body.balance = computedTotals.balance;
+
   const invoice = await Invoice.create(req.body);
+
+  // Track invoice count for billing limits
+  try {
+    const billingOwner = req.billingOwner || await resolveBillingOwner(req.user);
+    if (billingOwner?._id) {
+      await resetInvoiceCountIfNeeded(billingOwner);
+      await User.findByIdAndUpdate(billingOwner._id, { $inc: { invoiceCountThisMonth: 1 } });
+    }
+  } catch (error) {
+    console.warn('Unable to update invoice count:', error?.message || error);
+  }
 
   // Update inventory for products
   if (req.body.items && req.body.items.length > 0) {
@@ -208,9 +377,36 @@ exports.updateInvoice = asyncHandler(async (req, res, next) => {
     return next(new ErrorResponse('Not authorized to update this invoice', 403));
   }
 
-  // Check if invoice can be modified
-  if (invoice.status === 'paid' || invoice.status === 'cancelled' || invoice.status === 'void') {
+  const effectiveRole = getEffectiveRole(req);
+
+  if (isClient(effectiveRole)) {
+    return next(new ErrorResponse('Not authorized to update invoices', 403));
+  }
+
+  if (!isSuperAdmin(effectiveRole) && ['paid', 'cancelled', 'void'].includes(invoice.status)) {
     return next(new ErrorResponse('Cannot modify a paid, cancelled or void invoice', 400));
+  }
+
+  if ((isStaff(effectiveRole) || isAccountant(effectiveRole)) && invoice.status !== 'draft') {
+    return next(new ErrorResponse('Only draft invoices can be edited', 400));
+  }
+
+  if (isStaff(effectiveRole) && invoice.createdBy?.toString() !== req.user.id) {
+    return next(new ErrorResponse('Not authorized to update this invoice', 403));
+  }
+
+  if (req.body.currency !== undefined) {
+    const business = await Business.findById(req.user.business);
+    if (!business) {
+      return next(new ErrorResponse('Business not found', 404));
+    }
+    const currency = resolveInvoiceCurrency(business, req.body.currency);
+    const billingOwner = req.billingOwner || await resolveBillingOwner(req.user);
+    const effectivePlan = resolveEffectivePlan(billingOwner);
+    if (!isMultiCurrencyAllowed(effectivePlan) && currency !== business.currency) {
+      return next(new ErrorResponse('Multi-currency is available on Professional and Enterprise plans.', 403));
+    }
+    req.body.currency = currency;
   }
 
   // Add updatedBy
@@ -219,6 +415,100 @@ exports.updateInvoice = asyncHandler(async (req, res, next) => {
   // Handle inventory adjustments if items changed
   if (req.body.items) {
     // TODO: Implement inventory adjustment logic
+  }
+
+  const shouldRecalculate = Boolean(req.body.items)
+    || hasValue(req.body.taxRateUsed)
+    || hasValue(req.body.taxRate)
+    || hasValue(req.body.taxAmount)
+    || hasValue(req.body.taxName)
+    || hasValue(req.body.isTaxOverridden)
+    || hasValue(req.body.discount)
+    || hasValue(req.body.shipping)
+    || hasValue(req.body.amountPaid);
+
+  if (shouldRecalculate) {
+    const taxSettings = await getTaxSettings();
+    const {
+      overrideRate,
+      overrideAmount,
+      overrideName,
+      overrideRequested
+    } = resolveOverrideInput(req.body);
+
+    if (overrideRequested && !taxSettings.allowManualOverride) {
+      return next(new ErrorResponse('Manual tax override is not enabled', 403));
+    }
+
+    const baseRate = toNumber(invoice.taxRateUsed ?? invoice.tax?.percentage ?? 0, 0);
+    const baseAmount = toNumber(invoice.taxAmount ?? invoice.tax?.amount ?? 0, 0);
+    const baseName = invoice.taxName || invoice.tax?.description || taxSettings.taxName || 'VAT';
+    const baseOverride = Boolean(invoice.isTaxOverridden);
+
+    let taxRateUsed = baseRate;
+    let taxAmountOverride = null;
+    let taxName = baseName;
+    let isTaxOverridden = baseOverride;
+
+    if (overrideRequested) {
+      isTaxOverridden = true;
+      if (hasValue(overrideRate)) {
+        taxRateUsed = toNumber(overrideRate, baseRate);
+      }
+      if (hasValue(overrideAmount)) {
+        taxAmountOverride = overrideAmount;
+      }
+      if (overrideName) {
+        taxName = overrideName;
+      }
+    } else if (baseOverride) {
+      try {
+        const expected = calculateInvoiceTotals({
+          items: req.body.items ?? invoice.items,
+          discount: req.body.discount ?? invoice.discount,
+          shipping: req.body.shipping ?? invoice.shipping,
+          taxRateUsed: baseRate,
+          isTaxOverridden: false,
+          amountPaid: hasValue(req.body.amountPaid) ? req.body.amountPaid : invoice.amountPaid
+        });
+        if (Math.abs(roundMoney(expected.taxAmount) - roundMoney(baseAmount)) > 0.01) {
+          taxAmountOverride = baseAmount;
+        }
+      } catch (error) {
+        return next(new ErrorResponse(error.message, 400));
+      }
+    }
+
+    let computedTotals;
+    try {
+      computedTotals = calculateInvoiceTotals({
+        items: req.body.items ?? invoice.items,
+        discount: req.body.discount ?? invoice.discount,
+        shipping: req.body.shipping ?? invoice.shipping,
+        taxRateUsed,
+        taxAmountOverride,
+        isTaxOverridden,
+        amountPaid: hasValue(req.body.amountPaid) ? req.body.amountPaid : invoice.amountPaid
+      });
+    } catch (error) {
+      return next(new ErrorResponse(error.message, 400));
+    }
+
+    req.body.items = computedTotals.items;
+    req.body.subtotal = computedTotals.subtotal;
+    req.body.taxRateUsed = taxRateUsed;
+    req.body.taxAmount = computedTotals.taxAmount;
+    req.body.isTaxOverridden = isTaxOverridden;
+    req.body.taxName = taxName;
+    req.body.tax = {
+      ...(req.body.tax || invoice.tax || {}),
+      amount: computedTotals.taxAmount,
+      percentage: taxRateUsed,
+      description: taxName
+    };
+    req.body.total = computedTotals.total;
+    req.body.amountPaid = computedTotals.amountPaid;
+    req.body.balance = computedTotals.balance;
   }
 
   invoice = await Invoice.findByIdAndUpdate(req.params.id, req.body, {
@@ -250,19 +540,26 @@ exports.deleteInvoice = asyncHandler(async (req, res, next) => {
     return next(new ErrorResponse('Not authorized to delete this invoice', 403));
   }
 
-  // Only allow deletion of draft invoices
-  if (invoice.status !== 'draft') {
-    return next(new ErrorResponse('Can only delete draft invoices', 400));
+  const effectiveRole = getEffectiveRole(req);
+
+  if (!isSuperAdmin(effectiveRole)) {
+    return next(new ErrorResponse('Only super admins can delete invoices', 403));
   }
 
-  // Release reserved inventory
+  const shouldRestock = invoice.status === 'paid';
+
+  // Adjust inventory
   if (invoice.items && invoice.items.length > 0) {
     for (const item of invoice.items) {
       if (item.product) {
         const product = await Product.findById(item.product);
         
         if (product && product.trackInventory) {
-          product.stock.reserved -= item.quantity;
+          if (shouldRestock) {
+            product.stock.quantity += item.quantity;
+          } else {
+            product.stock.reserved = Math.max(0, product.stock.reserved - item.quantity);
+          }
           product.stock.available = product.stock.quantity - product.stock.reserved;
           await product.save();
 
@@ -270,7 +567,7 @@ exports.deleteInvoice = asyncHandler(async (req, res, next) => {
           await InventoryTransaction.create({
             business: invoice.business,
             product: item.product,
-            type: 'sale_cancelled',
+            type: shouldRestock ? 'sale_reversed' : 'sale_cancelled',
             quantity: item.quantity,
             reference: `Invoice Deleted: ${invoice.invoiceNumber}`,
             createdBy: req.user.id
@@ -308,6 +605,14 @@ exports.sendInvoice = asyncHandler(async (req, res, next) => {
     return next(new ErrorResponse('Not authorized to send this invoice', 403));
   }
 
+  const effectiveRole = getEffectiveRole(req);
+  if (isClient(effectiveRole)) {
+    return next(new ErrorResponse('Not authorized to send invoices', 403));
+  }
+  if (isStaff(effectiveRole) && invoice.createdBy?.toString() !== req.user.id) {
+    return next(new ErrorResponse('Not authorized to send this invoice', 403));
+  }
+
   // Generate PDF
   const pdfBuffer = await generatePDF.invoice(invoice);
 
@@ -324,8 +629,8 @@ exports.sendInvoice = asyncHandler(async (req, res, next) => {
       dueDate: invoice.dueDate.toLocaleDateString(),
       totalAmount: invoice.total.toFixed(2),
       currency: invoice.currency,
-      invoiceUrl: `${process.env.FRONTEND_URL}/invoices/${invoice._id}`,
-      payNowUrl: `${process.env.FRONTEND_URL}/pay/${invoice._id}`
+      invoiceUrl: `${process.env.FRONTEND_URL || process.env.REACT_APP_URL || `${req.protocol}://${req.get('host')}`}/invoices/${invoice._id}`,
+      payNowUrl: `${process.env.FRONTEND_URL || process.env.REACT_APP_URL || `${req.protocol}://${req.get('host')}`}/pay/${invoice._id}`
     },
     attachments: [{
       filename: `invoice-${invoice.invoiceNumber}.pdf`,
@@ -364,6 +669,19 @@ exports.getInvoicePDF = asyncHandler(async (req, res, next) => {
     return next(new ErrorResponse('Not authorized to access this invoice', 403));
   }
 
+  const effectiveRole = getEffectiveRole(req);
+  if (isStaff(effectiveRole) && invoice.createdBy?.toString() !== req.user.id) {
+    return next(new ErrorResponse('Not authorized to access this invoice', 403));
+  }
+  if (isClient(effectiveRole)) {
+    if (!req.user.customer) {
+      return next(new ErrorResponse('Client account is not linked to a customer', 403));
+    }
+    if (invoice.customer?._id?.toString() !== req.user.customer.toString()) {
+      return next(new ErrorResponse('Not authorized to access this invoice', 403));
+    }
+  }
+
   const pdfBuffer = await generatePDF.invoice(invoice);
 
   res.set({
@@ -381,15 +699,33 @@ exports.getInvoicePDF = asyncHandler(async (req, res, next) => {
 exports.recordPayment = asyncHandler(async (req, res, next) => {
   const { amount, paymentMethod, paymentReference, paymentGateway, notes, templateStyle } = req.body;
 
-  const invoice = await Invoice.findById(req.params.id);
+  const invoice = await Invoice.findById(req.params.id)
+    .populate('customer', 'name email')
+    .populate('business', 'name');
 
   if (!invoice) {
     return next(new ErrorResponse(`Invoice not found with id ${req.params.id}`, 404));
   }
 
+  const invoiceBusinessId = invoice.business?._id || invoice.business;
+  const invoiceCustomerId = invoice.customer?._id || invoice.customer;
+
   // Check if user has access
-  if (invoice.business.toString() !== req.user.business.toString()) {
+  if (!invoiceBusinessId || invoiceBusinessId.toString() !== req.user.business.toString()) {
     return next(new ErrorResponse('Not authorized to record payment for this invoice', 403));
+  }
+
+  const effectiveRole = getEffectiveRole(req);
+  if (isStaff(effectiveRole)) {
+    return next(new ErrorResponse('Not authorized to record payments', 403));
+  }
+  if (isClient(effectiveRole)) {
+    if (!req.user.customer) {
+      return next(new ErrorResponse('Client account is not linked to a customer', 403));
+    }
+    if (!invoiceCustomerId || invoiceCustomerId.toString() !== req.user.customer.toString()) {
+      return next(new ErrorResponse('Not authorized to pay this invoice', 403));
+    }
   }
 
   // Validate payment amount
@@ -415,7 +751,7 @@ exports.recordPayment = asyncHandler(async (req, res, next) => {
   const payment = await Payment.create({
     business: req.user.business,
     invoice: invoice._id,
-    customer: invoice.customer,
+    customer: invoiceCustomerId,
     amount,
     paymentMethod,
     paymentReference,
@@ -427,16 +763,25 @@ exports.recordPayment = asyncHandler(async (req, res, next) => {
   // If fully paid, generate receipt
   if (invoice.status === 'paid') {
     // Generate receipt
+    const business = await Business.findById(req.user.business);
+    if (!business) {
+      return next(new ErrorResponse('Business not found for receipt generation', 404));
+    }
+
     const receipt = await Receipt.create({
       business: req.user.business,
       invoice: invoice._id,
-      customer: invoice.customer,
-      receiptNumber: await Business.findById(req.user.business).getNextReceiptNumber(),
+      customer: invoiceCustomerId,
+      receiptNumber: await business.getNextReceiptNumber(),
       items: invoice.items,
       subtotal: invoice.subtotal,
       tax: invoice.tax,
+      taxName: invoice.taxName || invoice.tax?.description,
+      taxRateUsed: invoice.taxRateUsed ?? invoice.tax?.percentage,
+      taxAmount: invoice.taxAmount ?? invoice.tax?.amount,
+      isTaxOverridden: invoice.isTaxOverridden,
       total: invoice.total,
-      amountPaid: amount,
+      amountPaid: invoice.amountPaid,
       paymentMethod,
       templateStyle: templateStyle || req.body.templateId || req.body.template,
       createdBy: req.user.id
@@ -470,27 +815,48 @@ exports.recordPayment = asyncHandler(async (req, res, next) => {
     }
 
     // Send receipt email
-    const receiptPDF = await generatePDF.receipt(receipt);
-    
-    await sendEmail({
-      to: invoice.customer.email,
-      subject: `Receipt for Invoice ${invoice.invoiceNumber}`,
-      template: 'receipt',
-      context: {
-        customerName: invoice.customer.name,
-        businessName: invoice.business.name,
-        receiptNumber: receipt.receiptNumber,
+    const receiptCustomer = invoice.customer && typeof invoice.customer === 'object'
+      ? invoice.customer
+      : { name: 'Customer' };
+    const receiptForPdf = {
+      ...receipt.toObject(),
+      business,
+      customer: receiptCustomer,
+      invoice: {
+        _id: invoice._id,
         invoiceNumber: invoice.invoiceNumber,
-        paymentDate: new Date().toLocaleDateString(),
-        amountPaid: amount.toFixed(2),
-        paymentMethod
-      },
-      attachments: [{
-        filename: `receipt-${receipt.receiptNumber}.pdf`,
-        content: receiptPDF,
-        contentType: 'application/pdf'
-      }]
-    });
+        currency: invoice.currency
+      }
+    };
+    const receiptPDF = await generatePDF.receipt(receiptForPdf);
+    
+    if (invoice.customer?.email) {
+      await sendEmail({
+        to: invoice.customer.email,
+        subject: `Receipt for Invoice ${invoice.invoiceNumber}`,
+        template: 'receipt',
+        context: {
+          customerName: invoice.customer?.name || 'Customer',
+          businessName: invoice.business?.name || 'Business',
+          receiptNumber: receipt.receiptNumber,
+          invoiceNumber: invoice.invoiceNumber,
+          paymentDate: new Date().toLocaleDateString(),
+          amountPaid: amount.toFixed(2),
+          paymentMethod
+        },
+        attachments: [{
+          filename: `receipt-${receipt.receiptNumber}.pdf`,
+          content: receiptPDF,
+          contentType: 'application/pdf'
+        }]
+      });
+    } else {
+      console.warn('Skipping receipt email because customer email is missing', {
+        invoiceId: invoice._id?.toString?.() || invoice._id
+      });
+    }
+
+    await Customer.updateCustomerStats(invoiceCustomerId);
 
     res.status(200).json({
       success: true,
@@ -502,6 +868,8 @@ exports.recordPayment = asyncHandler(async (req, res, next) => {
       }
     });
   } else {
+    await Customer.updateCustomerStats(invoiceCustomerId);
+
     res.status(200).json({
       success: true,
       message: 'Partial payment recorded',
@@ -578,8 +946,8 @@ exports.sendReminder = asyncHandler(async (req, res, next) => {
       totalAmount: invoice.total.toFixed(2),
       currency: invoice.currency,
       lateFeeMessage,
-      invoiceUrl: `${process.env.FRONTEND_URL}/invoices/${invoice._id}`,
-      payNowUrl: `${process.env.FRONTEND_URL}/pay/${invoice._id}`
+      invoiceUrl: `${process.env.FRONTEND_URL || process.env.REACT_APP_URL || `${req.protocol}://${req.get('host')}`}/invoices/${invoice._id}`,
+      payNowUrl: `${process.env.FRONTEND_URL || process.env.REACT_APP_URL || `${req.protocol}://${req.get('host')}`}/pay/${invoice._id}`
     }
   });
 
@@ -678,6 +1046,14 @@ exports.duplicateInvoice = asyncHandler(async (req, res, next) => {
 
   // Check if user has access
   if (originalInvoice.business.toString() !== req.user.business.toString()) {
+    return next(new ErrorResponse('Not authorized to duplicate this invoice', 403));
+  }
+
+  const effectiveRole = getEffectiveRole(req);
+  if (isClient(effectiveRole)) {
+    return next(new ErrorResponse('Not authorized to duplicate invoices', 403));
+  }
+  if (isStaff(effectiveRole) && originalInvoice.createdBy?.toString() !== req.user.id) {
     return next(new ErrorResponse('Not authorized to duplicate this invoice', 403));
   }
 

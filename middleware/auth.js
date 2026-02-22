@@ -1,5 +1,6 @@
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
+const { normalizeRole, isSuperAdmin } = require('../utils/rolePermissions');
 
 // Protect routes
 exports.protect = async (req, res, next) => {
@@ -45,6 +46,7 @@ exports.protect = async (req, res, next) => {
     }
     
     req.user = user;
+    req.user.effectiveRole = normalizeRole(user.role);
     next();
   } catch (err) {
     return res.status(401).json({
@@ -57,7 +59,13 @@ exports.protect = async (req, res, next) => {
 // Grant access to specific roles
 exports.authorize = (...roles) => {
   return (req, res, next) => {
-    if (!roles.includes(req.user.role)) {
+    const effectiveRole = req.user?.effectiveRole || normalizeRole(req.user?.role);
+    if (isSuperAdmin(effectiveRole)) {
+      return next();
+    }
+
+    const allowedRoles = roles.map((role) => normalizeRole(role));
+    if (!allowedRoles.includes(effectiveRole)) {
       return res.status(403).json({
         success: false,
         error: `User role ${req.user.role} is not authorized to access this route`
@@ -69,7 +77,8 @@ exports.authorize = (...roles) => {
 
 // Business owner middleware
 exports.businessOwner = async (req, res, next) => {
-  if (req.user.role === 'admin' || req.user.business.toString() === req.params.businessId) {
+  const effectiveRole = req.user?.effectiveRole || normalizeRole(req.user?.role);
+  if (isSuperAdmin(effectiveRole) || effectiveRole === 'admin' || req.user.business.toString() === req.params.businessId) {
     next();
   } else {
     res.status(403).json({

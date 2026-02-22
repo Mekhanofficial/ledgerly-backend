@@ -4,6 +4,18 @@ const AuditLog = require('../models/AuditLog');
 const ErrorResponse = require('../utils/errorResponse');
 const asyncHandler = require('../utils/asyncHandler');
 const sendEmail = require('../utils/email');
+const {
+  normalizeRole,
+  getDefaultPermissions,
+  canManageRoles,
+  isRoleSupported,
+  isSuperAdmin,
+  isAdmin
+} = require('../utils/rolePermissions');
+
+const getRequesterRole = (req) => req.user?.effectiveRole || normalizeRole(req.user?.role);
+const ADMIN_ALLOWED_ROLES = ['admin', 'accountant', 'staff', 'client', 'viewer'];
+const isProtectedAdminRole = (role) => isSuperAdmin(role) || isAdmin(role);
 
 const logAuditEntry = async (req, action, resource, details = {}) => {
   await AuditLog.create({
@@ -24,6 +36,8 @@ const sendInviteEmail = async (email, name, token, inviterName, baseUrl) => {
     subject: 'You are invited to Ledgerly',
     text
   });
+
+  return inviteUrl;
 };
 
 // @desc    Get all team members
@@ -51,10 +65,29 @@ exports.getTeamMembers = asyncHandler(async (req, res, next) => {
 // @route   POST /api/v1/team/invite
 // @access  Private (Admin)
 exports.inviteTeamMember = asyncHandler(async (req, res, next) => {
-  const { email, role, name, permissions } = req.body;
+  const { email, role, name, permissions, customerId } = req.body;
+  const requesterRole = getRequesterRole(req);
 
-  if (!email || !role || !name) {
-    return next(new ErrorResponse('Name, email, and role are required', 400));
+  if (!email || !name) {
+    return next(new ErrorResponse('Name and email are required', 400));
+  }
+
+  const normalizedRole = normalizeRole(role || 'staff');
+  if (!isRoleSupported(normalizedRole)) {
+    return next(new ErrorResponse('Invalid role provided', 400));
+  }
+
+  if (!isSuperAdmin(requesterRole)) {
+    if (!isAdmin(requesterRole)) {
+      return next(new ErrorResponse('Not authorized to invite team members', 403));
+    }
+    if (!ADMIN_ALLOWED_ROLES.includes(normalizedRole)) {
+      return next(new ErrorResponse('Only super admins can assign that role', 403));
+    }
+  }
+
+  if (normalizedRole === 'client' && !customerId) {
+    return next(new ErrorResponse('customerId is required for client users', 400));
   }
 
   const exists = await User.findOne({ email: email.toLowerCase() });
@@ -67,26 +100,31 @@ exports.inviteTeamMember = asyncHandler(async (req, res, next) => {
   const user = await User.create({
     name,
     email: email.toLowerCase(),
-    role,
+    role: normalizedRole,
     business: req.user.business,
     password: tempPassword,
     invitedBy: req.user.id,
     invitationAccepted: false,
-    permissions: permissions || undefined
+    customer: normalizedRole === 'client' ? customerId : undefined,
+    permissions: isSuperAdmin(requesterRole) ? (permissions || getDefaultPermissions(normalizedRole)) : getDefaultPermissions(normalizedRole)
   });
 
   const token = user.getInvitationToken();
   await user.save();
 
-  const baseUrl = process.env.REACT_APP_URL || `${req.protocol}://${req.get('host')}`;
-  await sendInviteEmail(user.email, user.name, token, req.user.name, baseUrl);
+  const baseUrl = process.env.FRONTEND_URL || process.env.REACT_APP_URL || `${req.protocol}://${req.get('host')}`;
+  const inviteUrl = await sendInviteEmail(user.email, user.name, token, req.user.name, baseUrl);
+  const emailConfigured = Boolean(process.env.EMAIL_HOST && process.env.EMAIL_USER && process.env.EMAIL_PASS);
 
   await logAuditEntry(req, 'invite-team-member', 'User', { userId: user._id, email: user.email });
 
   res.status(201).json({
     success: true,
-    message: 'Invitation sent',
-    data: { userId: user._id }
+    message: emailConfigured ? 'Invitation sent' : 'Invitation created',
+    data: {
+      userId: user._id,
+      inviteUrl: emailConfigured ? undefined : inviteUrl
+    }
   });
 });
 
@@ -110,14 +148,18 @@ exports.resendInvitation = asyncHandler(async (req, res, next) => {
   const token = user.getInvitationToken();
   await user.save();
 
-  const baseUrl = process.env.REACT_APP_URL || `${req.protocol}://${req.get('host')}`;
-  await sendInviteEmail(user.email, user.name, token, req.user.name, baseUrl);
+  const baseUrl = process.env.FRONTEND_URL || process.env.REACT_APP_URL || `${req.protocol}://${req.get('host')}`;
+  const inviteUrl = await sendInviteEmail(user.email, user.name, token, req.user.name, baseUrl);
+  const emailConfigured = Boolean(process.env.EMAIL_HOST && process.env.EMAIL_USER && process.env.EMAIL_PASS);
 
   await logAuditEntry(req, 'resend-invitation', 'User', { userId: user._id });
 
   res.status(200).json({
     success: true,
-    message: 'Invitation resent'
+    message: emailConfigured ? 'Invitation resent' : 'Invitation link generated',
+    data: {
+      inviteUrl: emailConfigured ? undefined : inviteUrl
+    }
   });
 });
 
@@ -178,15 +220,56 @@ exports.updateTeamMember = asyncHandler(async (req, res, next) => {
     return next(new ErrorResponse('User not found', 404));
   }
 
+  const requesterRole = getRequesterRole(req);
+  if (isAdmin(requesterRole) && isSuperAdmin(user.role)) {
+    return next(new ErrorResponse('Cannot modify a super admin', 403));
+  }
+
+  if (req.body.isActive === false && isProtectedAdminRole(user.role)) {
+    return next(new ErrorResponse('Admin accounts cannot be deactivated', 403));
+  }
+
   if (req.body.role) {
-    user.role = req.body.role;
+    const normalizedRole = normalizeRole(req.body.role);
+    if (!isRoleSupported(normalizedRole)) {
+      return next(new ErrorResponse('Invalid role provided', 400));
+    }
+    if (!isSuperAdmin(requesterRole)) {
+      if (!isAdmin(requesterRole)) {
+        return next(new ErrorResponse('Not authorized to change roles', 403));
+      }
+      if (!ADMIN_ALLOWED_ROLES.includes(normalizedRole)) {
+        return next(new ErrorResponse('Only super admins can assign that role', 403));
+      }
+    }
+    if (normalizedRole === 'client' && !req.body.customerId && !user.customer) {
+      return next(new ErrorResponse('customerId is required for client users', 400));
+    }
+    user.role = normalizedRole;
+    if (!req.body.permissions) {
+      user.permissions = getDefaultPermissions(normalizedRole);
+    }
   }
 
   if (req.body.permissions) {
+    if (!canManageRoles(req.user.role)) {
+      return next(new ErrorResponse('Only super admins can update permissions', 403));
+    }
     user.permissions = {
       ...user.permissions,
       ...req.body.permissions
     };
+  }
+
+  if (req.body.customerId !== undefined) {
+    if (isSuperAdmin(requesterRole)) {
+      user.customer = req.body.customerId || undefined;
+    } else {
+      if (user.role !== 'client' && normalizeRole(req.body.role || user.role) !== 'client') {
+        return next(new ErrorResponse('Customer assignments are only for client roles', 400));
+      }
+      user.customer = req.body.customerId || undefined;
+    }
   }
 
   if (req.body.isActive !== undefined) {
@@ -214,6 +297,10 @@ exports.removeTeamMember = asyncHandler(async (req, res, next) => {
 
   if (!user) {
     return next(new ErrorResponse('User not found', 404));
+  }
+
+  if (isProtectedAdminRole(user.role)) {
+    return next(new ErrorResponse('Admin accounts cannot be deactivated', 403));
   }
 
   user.isActive = false;
