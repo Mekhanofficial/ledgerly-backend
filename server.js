@@ -112,6 +112,7 @@ const superAdmin = require('./routes/superAdmin');
 const taxSettings = require('./routes/taxSettings');
 const billing = require('./routes/billing');
 const documents = require('./routes/documents');
+const webhooks = require('./routes/webhooks');
 
 // Mount routers
 app.use('/api/v1/auth', auth);
@@ -132,6 +133,7 @@ app.use('/api/v1/super-admin', superAdmin);
 app.use('/api/v1/tax-settings', taxSettings);
 app.use('/api/v1/billing', billing);
 app.use('/api/v1/documents', documents);
+app.use('/api/v1/webhooks', webhooks);
 
 // Health check
 app.get('/health', (req, res) => {

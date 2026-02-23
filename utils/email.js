@@ -1,32 +1,4 @@
-const nodemailer = require('nodemailer');
-const fs = require('fs');
-const path = require('path');
-
-// Create transporter if credentials exist
-let transporter = null;
-
-if (process.env.EMAIL_HOST && process.env.EMAIL_USER && process.env.EMAIL_PASS) {
-  transporter = nodemailer.createTransport({
-    host: process.env.EMAIL_HOST,
-    port: process.env.EMAIL_PORT,
-    secure: process.env.EMAIL_PORT === 465,
-    auth: {
-      user: process.env.EMAIL_USER,
-      pass: process.env.EMAIL_PASS
-    }
-  });
-
-  // Verify connection
-  transporter.verify((error, success) => {
-    if (error) {
-      console.error('Email connection error:', error);
-    } else {
-      console.log('Email server is ready to send messages');
-    }
-  });
-} else {
-  console.warn('Email transporter not configured. Set EMAIL_HOST/EMAIL_USER/EMAIL_PASS to enable delivery.');
-}
+const transporter = require('./mailer');
 
 // Email templates
 const templates = {
@@ -182,7 +154,12 @@ const templates = {
 // Send email function
 const sendEmail = async (options) => {
   const message = {
-    from: process.env.EMAIL_FROM || process.env.EMAIL_USER || 'Ledgerly <no-reply@ledgerly.com>',
+    from:
+      process.env.MAIL_FROM
+      || process.env.EMAIL_FROM
+      || process.env.MAIL_USER
+      || process.env.EMAIL_USER
+      || 'Ledgerly <no-reply@ledgerly.com>',
     to: options.to,
     subject: options.subject,
     text: options.text || options.subject,
@@ -193,6 +170,12 @@ const sendEmail = async (options) => {
   if (options.template && templates[options.template]) {
     let html = templates[options.template];
     
+    // Minimal conditional support for {{#if key}}...{{/if}}
+    html = html.replace(/{{#if\s+([a-zA-Z0-9_]+)}}([\s\S]*?){{\/if}}/g, (match, key, content) => {
+      const value = options.context?.[key];
+      return value ? content : '';
+    });
+
     // Replace template variables
     if (options.context) {
       Object.keys(options.context).forEach(key => {
@@ -200,6 +183,9 @@ const sendEmail = async (options) => {
         html = html.replace(regex, options.context[key]);
       });
     }
+
+    // Remove any unreplaced template tags left behind
+    html = html.replace(/{{[^}]+}}/g, '');
     
     message.html = html;
   }

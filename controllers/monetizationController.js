@@ -136,7 +136,7 @@ const applyPaystackMetadata = async (payload, req) => {
     const templateId = metadata.templateId;
     const unlockAllTemplates = type === 'lifetime' || metadata.unlockAllTemplates;
     const amount = Number(payload?.amount) / 100;
-    const currency = payload?.currency || resolveCurrency('USD');
+    const currency = payload?.currency || resolveCurrency('NGN');
     const reference = payload?.reference || metadata.reference || `paystack_${Date.now()}`;
 
     await handleTemplateUnlock({
@@ -168,7 +168,7 @@ exports.initializeSubscriptionPayment = asyncHandler(async (req, res, next) => {
 
   const planDef = PLAN_DEFINITIONS[plan];
   const amount = billingCycle === 'yearly' ? planDef.yearlyPrice : planDef.monthlyPrice;
-  const currency = resolveCurrency('USD');
+  const currency = resolveCurrency('NGN');
   const reference = `sub_${billingOwner._id}_${Date.now()}`;
   const planCode = resolvePlanCode(plan, billingCycle);
 
@@ -252,7 +252,7 @@ exports.initializeTemplatePayment = asyncHandler(async (req, res, next) => {
     }
   }
 
-  const currency = resolveCurrency('USD');
+  const currency = resolveCurrency('NGN');
   const reference = `tmpl_${billingOwner._id}_${Date.now()}`;
 
   const response = await initializeTransaction({

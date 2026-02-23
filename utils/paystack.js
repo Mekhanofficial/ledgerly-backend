@@ -8,7 +8,9 @@ const getSecretKey = () => process.env.PAYSTACK_SECRET_KEY;
 const requestPaystack = (method, path, payload = null) => new Promise((resolve, reject) => {
   const secretKey = getSecretKey();
   if (!secretKey) {
-    return reject(new Error('PAYSTACK_SECRET_KEY is not configured'));
+    const error = new Error('PAYSTACK_SECRET_KEY is not configured');
+    error.statusCode = 500;
+    return reject(error);
   }
 
   const body = payload ? JSON.stringify(payload) : null;
@@ -38,7 +40,11 @@ const requestPaystack = (method, path, payload = null) => new Promise((resolve, 
           resolve(parsed);
         } else {
           const message = parsed?.message || `Paystack error (${res.statusCode})`;
-          reject(new Error(message));
+          const error = new Error(message);
+          error.statusCode = res.statusCode >= 500 ? 502 : (res.statusCode || 500);
+          error.paystackStatusCode = res.statusCode || 500;
+          error.paystackResponse = parsed;
+          reject(error);
         }
       } catch (error) {
         reject(error);
@@ -67,7 +73,7 @@ const resolvePlanCode = (planId, billingCycle = 'monthly') => {
   return process.env[specificKey] || process.env[genericKey] || null;
 };
 
-const resolveCurrency = (fallback = 'USD') => {
+const resolveCurrency = (fallback = 'NGN') => {
   const currency = process.env.PAYSTACK_CURRENCY || fallback;
   return String(currency).trim().toUpperCase();
 };

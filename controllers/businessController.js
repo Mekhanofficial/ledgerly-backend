@@ -231,3 +231,127 @@ exports.updateInvoiceSettings = asyncHandler(async (req, res, next) => {
     data: business.invoiceSettings
   });
 });
+
+// @desc    Get business Paystack settings summary
+// @route   GET /api/v1/business/paystack
+// @access  Private (Admin/Accountant)
+exports.getPaystackSettings = asyncHandler(async (req, res, next) => {
+  const business = await Business.findById(req.user.business).select('+paystack.secretKeyEncrypted');
+
+  if (!business) {
+    return next(new ErrorResponse('Business not found', 404));
+  }
+
+  res.status(200).json({
+    success: true,
+    data: business.getPaystackSummary()
+  });
+});
+
+// @desc    Connect/update business Paystack keys for invoice payments
+// @route   PUT /api/v1/business/paystack
+// @access  Private (Admin/Accountant)
+exports.updatePaystackSettings = asyncHandler(async (req, res, next) => {
+  const business = await Business.findById(req.user.business).select('+paystack.secretKeyEncrypted');
+
+  if (!business) {
+    return next(new ErrorResponse('Business not found', 404));
+  }
+
+  const {
+    publicKey,
+    secretKey,
+    enabled,
+    webhookEnabled
+  } = req.body || {};
+
+  if (publicKey !== undefined) {
+    const normalizedPublicKey = String(publicKey || '').trim();
+    if (!normalizedPublicKey) {
+      return next(new ErrorResponse('Paystack public key cannot be empty', 400));
+    }
+    business.paystack.publicKey = normalizedPublicKey;
+  }
+
+  if (secretKey !== undefined) {
+    const normalizedSecretKey = String(secretKey || '').trim();
+    if (!normalizedSecretKey) {
+      return next(new ErrorResponse('Paystack secret key cannot be empty', 400));
+    }
+    try {
+      business.setPaystackSecretKey(normalizedSecretKey);
+    } catch (error) {
+      return next(new ErrorResponse(
+        'Unable to encrypt Paystack secret key. Configure BUSINESS_KEYS_ENCRYPTION_KEY or APP_ENCRYPTION_KEY on the server.',
+        500
+      ));
+    }
+  }
+
+  if (enabled !== undefined) {
+    business.paystack.enabled = Boolean(enabled);
+  }
+
+  if (webhookEnabled !== undefined) {
+    business.paystack.webhookEnabled = Boolean(webhookEnabled);
+  }
+
+  const hasPublicKey = Boolean(String(business.paystack?.publicKey || '').trim());
+  const hasSecretKey = Boolean(business.paystack?.secretKeyEncrypted);
+
+  if ((publicKey !== undefined || secretKey !== undefined) && (!hasPublicKey || !hasSecretKey)) {
+    business.paystack.enabled = false;
+  }
+
+  if (hasPublicKey && hasSecretKey && enabled === undefined) {
+    business.paystack.enabled = true;
+  }
+
+  if (!business.paystack.connectedAt && hasPublicKey && hasSecretKey) {
+    business.paystack.connectedAt = new Date();
+  }
+  business.paystack.updatedAt = new Date();
+
+  await business.save();
+  await logAuditEntry(req, 'update-business-paystack', 'Business', {
+    enabled: business.paystack.enabled,
+    webhookEnabled: business.paystack.webhookEnabled,
+    hasPublicKey,
+    hasSecretKey
+  });
+
+  res.status(200).json({
+    success: true,
+    message: 'Paystack settings saved',
+    data: business.getPaystackSummary()
+  });
+});
+
+// @desc    Disconnect business Paystack keys for invoice payments
+// @route   DELETE /api/v1/business/paystack
+// @access  Private (Admin/Accountant)
+exports.removePaystackSettings = asyncHandler(async (req, res, next) => {
+  const business = await Business.findById(req.user.business).select('+paystack.secretKeyEncrypted');
+
+  if (!business) {
+    return next(new ErrorResponse('Business not found', 404));
+  }
+
+  business.paystack = {
+    ...(business.paystack || {}),
+    enabled: false,
+    publicKey: '',
+    secretKeyEncrypted: '',
+    secretKeyLast4: '',
+    updatedAt: new Date()
+  };
+
+  await business.save();
+  await logAuditEntry(req, 'remove-business-paystack', 'Business', {});
+
+  res.status(200).json({
+    success: true,
+    message: 'Paystack disconnected',
+    data: business.getPaystackSummary()
+  });
+});

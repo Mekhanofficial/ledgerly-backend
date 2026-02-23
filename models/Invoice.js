@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const mongoose = require('mongoose');
 const { calculateInvoiceTotals, toNumber } = require('../utils/invoiceCalculator');
 
@@ -15,6 +16,11 @@ const InvoiceSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Customer',
     required: true
+  },
+  clientEmail: {
+    type: String,
+    trim: true,
+    lowercase: true
   },
   date: {
     type: Date,
@@ -205,6 +211,23 @@ const InvoiceSchema = new mongoose.Schema({
     default: 0
   },
   lastReminderSent: Date,
+  publicSlug: {
+    type: String,
+    sparse: true
+  },
+  publicAccessEnabled: {
+    type: Boolean,
+    default: true
+  },
+  paymentLinkSentAt: Date,
+  transactionReference: String,
+  transactionAmount: Number,
+  transactionCurrency: String,
+  paymentInitializedAt: Date,
+  paymentVerifiedAt: Date,
+  paymentVerificationSource: String,
+  paymentConfirmationEmailsSentAt: Date,
+  lastPaymentEventType: String,
   isEstimate: {
     type: Boolean,
     default: false
@@ -239,6 +262,10 @@ const InvoiceSchema = new mongoose.Schema({
 
 // Generate invoice number before save
 InvoiceSchema.pre('save', async function(next) {
+  if (!this.publicSlug) {
+    this.publicSlug = `inv_${crypto.randomBytes(8).toString('hex')}`;
+  }
+
   if (!this.invoiceNumber && !this.isEstimate) {
     const business = await mongoose.model('Business').findById(this.business);
     const invoiceNumber = await business.getNextInvoiceNumber();
@@ -363,5 +390,7 @@ InvoiceSchema.index({ business: 1, status: 1 });
 InvoiceSchema.index({ business: 1, date: -1 });
 InvoiceSchema.index({ business: 1, dueDate: 1 });
 InvoiceSchema.index({ business: 1, 'recurring.nextInvoiceDate': 1 });
+InvoiceSchema.index({ publicSlug: 1 }, { unique: true, sparse: true });
+InvoiceSchema.index({ business: 1, transactionReference: 1 });
 
 module.exports = mongoose.model('Invoice', InvoiceSchema);

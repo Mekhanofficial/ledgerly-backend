@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const Invoice = require('../models/Invoice');
 const Customer = require('../models/Customer');
 const Product = require('../models/Product');
@@ -280,6 +281,10 @@ exports.createInvoice = asyncHandler(async (req, res, next) => {
 
   if (!customer) {
     return next(new ErrorResponse('Customer not found', 404));
+  }
+
+  if (!req.body.clientEmail && customer.email) {
+    req.body.clientEmail = customer.email;
   }
 
   // Process items and update inventory
@@ -686,8 +691,19 @@ exports.sendInvoice = asyncHandler(async (req, res, next) => {
     return next(new ErrorResponse('Not authorized to send this invoice', 403));
   }
 
+  if (!invoice.publicSlug) {
+    invoice.publicSlug = `inv_${crypto.randomBytes(8).toString('hex')}`;
+    await invoice.save();
+  }
+
   // Generate PDF
   const pdfBuffer = await generatePDF.invoice(invoice);
+
+  const frontendBaseUrl =
+    process.env.APP_BASE_URL
+    || process.env.FRONTEND_URL
+    || process.env.REACT_APP_URL
+    || `${req.protocol}://${req.get('host')}`;
 
   // Send email
   await sendEmail({
@@ -702,8 +718,8 @@ exports.sendInvoice = asyncHandler(async (req, res, next) => {
       dueDate: invoice.dueDate.toLocaleDateString(),
       totalAmount: invoice.total.toFixed(2),
       currency: invoice.currency,
-      invoiceUrl: `${process.env.FRONTEND_URL || process.env.REACT_APP_URL || `${req.protocol}://${req.get('host')}`}/invoices/${invoice._id}`,
-      payNowUrl: `${process.env.FRONTEND_URL || process.env.REACT_APP_URL || `${req.protocol}://${req.get('host')}`}/pay/${invoice._id}`
+      invoiceUrl: `${frontendBaseUrl}/invoices/view/${invoice._id}`,
+      payNowUrl: `${frontendBaseUrl}/invoice/pay/${invoice.publicSlug}`
     },
     attachments: [{
       filename: `invoice-${invoice.invoiceNumber}.pdf`,
@@ -715,6 +731,7 @@ exports.sendInvoice = asyncHandler(async (req, res, next) => {
   // Update invoice status
   invoice.status = 'sent';
   invoice.sentDate = new Date();
+  invoice.paymentLinkSentAt = new Date();
   await invoice.save();
 
   res.status(200).json({
@@ -1003,6 +1020,18 @@ exports.sendReminder = asyncHandler(async (req, res, next) => {
     }
   }
 
+  if (!invoice.publicSlug) {
+    invoice.publicSlug = `inv_${crypto.randomBytes(8).toString('hex')}`;
+    await invoice.save();
+  }
+
+  const publicAppBaseUrl = (
+    process.env.APP_BASE_URL
+    || process.env.FRONTEND_URL
+    || process.env.REACT_APP_URL
+    || `${req.protocol}://${req.get('host')}`
+  ).replace(/\/+$/, '');
+
   // Send reminder email
   await sendEmail({
     to: invoice.customer.email,
@@ -1019,8 +1048,8 @@ exports.sendReminder = asyncHandler(async (req, res, next) => {
       totalAmount: invoice.total.toFixed(2),
       currency: invoice.currency,
       lateFeeMessage,
-      invoiceUrl: `${process.env.FRONTEND_URL || process.env.REACT_APP_URL || `${req.protocol}://${req.get('host')}`}/invoices/${invoice._id}`,
-      payNowUrl: `${process.env.FRONTEND_URL || process.env.REACT_APP_URL || `${req.protocol}://${req.get('host')}`}/pay/${invoice._id}`
+      invoiceUrl: `${publicAppBaseUrl}/invoice/pay/${invoice.publicSlug}`,
+      payNowUrl: `${publicAppBaseUrl}/invoice/pay/${invoice.publicSlug}`
     }
   });
 

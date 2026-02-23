@@ -4,6 +4,7 @@ const Business = require('../models/Business');
 const Subscription = require('../models/Subscription');
 const AddOns = require('../models/AddOns');
 const { PLAN_DEFINITIONS, normalizePlanId, YEARLY_DISCOUNT } = require('../utils/planConfig');
+const { resolveCurrency } = require('../utils/paystack');
 const {
   resolveBillingOwner,
   resolveEffectivePlan,
@@ -24,6 +25,7 @@ const clampExtraSeats = (value) => {
 // @access  Private (Admin/Super Admin)
 exports.getBillingSummary = asyncHandler(async (req, res) => {
   const billingOwner = await resolveBillingOwner(req.user);
+  const pricingCurrency = resolveCurrency('NGN');
   const business = await Business.findById(req.user.business)
     .select('subscription paymentMethods currency name')
     .lean();
@@ -62,7 +64,8 @@ exports.getBillingSummary = asyncHandler(async (req, res) => {
         analyticsEnabled: false
       },
       paymentMethods: business?.paymentMethods || [],
-      currency: business?.currency || 'USD',
+      currency: business?.currency || pricingCurrency,
+      pricingCurrency,
       businessName: business?.name || '',
       invoiceLimit: billingOwner ? resolveInvoiceLimit(billingOwner) : undefined,
       invoiceCountThisMonth: billingOwner?.invoiceCountThisMonth ?? 0

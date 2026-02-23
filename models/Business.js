@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { encryptString, decryptString, maskSecret } = require('../utils/fieldEncryption');
 
 const BusinessSchema = new mongoose.Schema({
   name: {
@@ -118,6 +119,30 @@ const BusinessSchema = new mongoose.Schema({
     },
     accountDetails: String
   }],
+  paystack: {
+    enabled: {
+      type: Boolean,
+      default: false
+    },
+    publicKey: {
+      type: String,
+      trim: true
+    },
+    secretKeyEncrypted: {
+      type: String,
+      select: false
+    },
+    secretKeyLast4: {
+      type: String,
+      default: ''
+    },
+    webhookEnabled: {
+      type: Boolean,
+      default: true
+    },
+    connectedAt: Date,
+    updatedAt: Date
+  },
   emailSettings: {
     host: String,
     port: Number,
@@ -182,6 +207,51 @@ BusinessSchema.methods.getNextReceiptNumber = async function() {
   this.receiptSettings.nextNumber += 1;
   await this.save();
   return `${this.receiptSettings.prefix}-${String(nextNumber).padStart(5, '0')}`;
+};
+
+BusinessSchema.methods.setPaystackSecretKey = function(secretKey) {
+  const trimmed = String(secretKey || '').trim();
+
+  if (!trimmed) {
+    this.paystack = {
+      ...(this.paystack || {}),
+      secretKeyEncrypted: '',
+      secretKeyLast4: ''
+    };
+    return;
+  }
+
+  this.paystack = {
+    ...(this.paystack || {}),
+    secretKeyEncrypted: encryptString(trimmed),
+    secretKeyLast4: trimmed.slice(-4)
+  };
+};
+
+BusinessSchema.methods.getPaystackSecretKey = function() {
+  const encrypted = this.paystack?.secretKeyEncrypted;
+  if (!encrypted) return '';
+  return decryptString(encrypted);
+};
+
+BusinessSchema.methods.getPaystackSummary = function() {
+  const publicKey = String(this.paystack?.publicKey || '').trim();
+  const hasSecretKey = Boolean(this.paystack?.secretKeyEncrypted);
+  const publicKeyMasked = publicKey ? maskSecret(publicKey, 6) : '';
+  const secretKeyMasked = this.paystack?.secretKeyLast4
+    ? `${'*'.repeat(8)}${this.paystack.secretKeyLast4}`
+    : '';
+
+  return {
+    enabled: Boolean(this.paystack?.enabled),
+    webhookEnabled: this.paystack?.webhookEnabled !== false,
+    connectedAt: this.paystack?.connectedAt || null,
+    updatedAt: this.paystack?.updatedAt || null,
+    publicKey,
+    publicKeyMasked,
+    hasSecretKey,
+    secretKeyMasked
+  };
 };
 
 module.exports = mongoose.model('Business', BusinessSchema);

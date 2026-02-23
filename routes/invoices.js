@@ -18,6 +18,10 @@ const {
   pauseRecurringInvoice,
   resumeRecurringInvoice
 } = require('../controllers/invoiceController');
+const {
+  getPublicInvoice,
+  initializePublicInvoicePaystackPayment
+} = require('../controllers/invoicePaymentController');
 const { protect, authorize } = require('../middleware/auth');
 const {
   checkSubscription,
@@ -25,14 +29,12 @@ const {
   checkFeatureAccess
 } = require('../middleware/subscription');
 
-// All routes are protected
-router.use(protect);
-
 // Public invoice view (for customers)
-router.get('/public/:id', async (req, res) => {
-  // This would be for sharing invoices via link
-  // Implement token-based access
-});
+router.get('/public/:slug', getPublicInvoice);
+router.post('/public/:slug/paystack/initialize', initializePublicInvoicePaystackPayment);
+
+// All remaining routes are protected
+router.use(protect);
 
 // Invoice routes
 router.route('/')

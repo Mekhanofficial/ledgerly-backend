@@ -12,10 +12,12 @@ const {
   verifyPayment,
   paystackWebhook
 } = require('../controllers/monetizationController');
+const { verifyPublicInvoicePayment } = require('../controllers/invoicePaymentController');
 const { protect, authorize } = require('../middleware/auth');
 
 // Paystack webhook (no auth)
 router.post('/webhook', paystackWebhook);
+router.get('/verify', verifyPublicInvoicePayment);
 
 router.use(protect);
 
