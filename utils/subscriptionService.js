@@ -2,7 +2,6 @@ const Business = require('../models/Business');
 const Subscription = require('../models/Subscription');
 const User = require('../models/User');
 const { PLAN_DEFINITIONS, normalizePlanId } = require('./planConfig');
-const { isSuperAdmin } = require('./rolePermissions');
 
 const TRIAL_DAYS = 7;
 const TRIAL_PLAN = 'professional';
@@ -23,68 +22,8 @@ const shouldResetInvoiceCount = (lastReset, now) => {
     || lastReset.getUTCMonth() !== now.getUTCMonth();
 };
 
-const hasSuperAdminLifetimeAccess = (user) => isSuperAdmin(user?.role);
-const SUPER_ADMIN_PLAN = 'enterprise';
-
-const normalizeSuperAdminSubscriptionState = async (user) => {
-  if (!user || !hasSuperAdminLifetimeAccess(user)) return user;
-
-  let changed = false;
-
-  if (user.plan !== SUPER_ADMIN_PLAN) {
-    user.plan = SUPER_ADMIN_PLAN;
-    changed = true;
-  }
-  if (user.subscriptionStatus !== 'active') {
-    user.subscriptionStatus = 'active';
-    changed = true;
-  }
-  if (user.trialEndsAt) {
-    user.trialEndsAt = null;
-    changed = true;
-  }
-  if (user.subscriptionEndsAt) {
-    user.subscriptionEndsAt = null;
-    changed = true;
-  }
-  if (user.invoiceLimit !== Infinity) {
-    user.invoiceLimit = Infinity;
-    changed = true;
-  }
-
-  if (changed) {
-    await user.save();
-  }
-
-  return user;
-};
-
 
 const startTrialForUser = async ({ user, business }) => {
-  if (hasSuperAdminLifetimeAccess(user)) {
-    user.plan = SUPER_ADMIN_PLAN;
-    user.subscriptionStatus = 'active';
-    user.trialEndsAt = null;
-    user.subscriptionEndsAt = null;
-    user.invoiceLimit = Infinity;
-    user.invoiceCountThisMonth = 0;
-    user.invoiceCountResetAt = new Date();
-    await user.save();
-
-    if (business) {
-      business.subscription = {
-        ...(business.subscription || {}),
-        plan: SUPER_ADMIN_PLAN,
-        status: 'active',
-        currentPeriodEnd: null,
-        trialEndsAt: null
-      };
-      await business.save();
-    }
-
-    return { trialEndsAt: null };
-  }
-
   const now = new Date();
   const trialEndsAt = addDays(now, TRIAL_DAYS);
 
@@ -123,7 +62,6 @@ const startTrialForUser = async ({ user, business }) => {
 };
 
 const resolveBillingOwner = async (user) => {
-  if (hasSuperAdminLifetimeAccess(user)) return user;
   if (!user?.business) return user;
   const business = await Business.findById(user.business).select('owner').lean();
   if (business?.owner) {
@@ -135,7 +73,6 @@ const resolveBillingOwner = async (user) => {
 
 const isTrialActive = (user) => {
   if (!user) return false;
-  if (hasSuperAdminLifetimeAccess(user)) return false;
   if (user.subscriptionStatus !== 'trial') return false;
   if (!user.trialEndsAt) return false;
   return new Date(user.trialEndsAt) >= new Date();
@@ -143,7 +80,6 @@ const isTrialActive = (user) => {
 
 const isSubscriptionActive = (user) => {
   if (!user) return false;
-  if (hasSuperAdminLifetimeAccess(user)) return true;
   const status = user.subscriptionStatus || 'active';
   if (status === 'active') {
     if (!user.subscriptionEndsAt) return true;
@@ -154,7 +90,6 @@ const isSubscriptionActive = (user) => {
 
 const resolveEffectivePlan = (user) => {
   if (!user) return 'starter';
-  if (hasSuperAdminLifetimeAccess(user)) return SUPER_ADMIN_PLAN;
   if (isTrialActive(user) || isSubscriptionActive(user)) {
     return normalizePlanId(user.plan);
   }
@@ -163,10 +98,6 @@ const resolveEffectivePlan = (user) => {
 
 const expireSubscriptionIfNeeded = async (user) => {
   if (!user) return null;
-  if (hasSuperAdminLifetimeAccess(user)) {
-    await normalizeSuperAdminSubscriptionState(user);
-    return 'active';
-  }
   const now = new Date();
   if (user.subscriptionStatus === 'trial' && user.trialEndsAt && new Date(user.trialEndsAt) < now) {
     user.subscriptionStatus = 'expired';
@@ -187,17 +118,6 @@ const syncBusinessFromUser = async (user) => {
   if (!user?.business) return null;
   const business = await Business.findById(user.business);
   if (!business) return null;
-  if (hasSuperAdminLifetimeAccess(user)) {
-    business.subscription = {
-      ...(business.subscription || {}),
-      plan: SUPER_ADMIN_PLAN,
-      status: 'active',
-      currentPeriodEnd: null,
-      trialEndsAt: null
-    };
-    await business.save();
-    return business;
-  }
   const plan = normalizePlanId(user.plan || business.subscription?.plan || 'starter');
   const status = user.subscriptionStatus || business.subscription?.status || 'active';
   business.subscription = {
@@ -213,13 +133,6 @@ const syncBusinessFromUser = async (user) => {
 
 const resetInvoiceCountIfNeeded = async (user) => {
   if (!user) return user;
-  if (hasSuperAdminLifetimeAccess(user)) {
-    if (user.invoiceLimit !== Infinity) {
-      user.invoiceLimit = Infinity;
-      await user.save();
-    }
-    return user;
-  }
   const now = new Date();
   const lastReset = user.invoiceCountResetAt ? new Date(user.invoiceCountResetAt) : null;
   const needsReset = shouldResetInvoiceCount(lastReset, now);
@@ -268,7 +181,7 @@ const syncTrialPeriods = async () => {
     if (sub.user) {
       userUpdates.push({
         updateOne: {
-          filter: { _id: sub.user, subscriptionStatus: 'trial', role: { $ne: 'super_admin' } },
+          filter: { _id: sub.user, subscriptionStatus: 'trial' },
           update: {
             $set: {
               trialEndsAt: expectedEnd,
@@ -323,7 +236,6 @@ const resetMonthlyInvoiceCounts = async () => {
 
   await User.updateMany(
     {
-      role: { $ne: 'super_admin' },
       subscriptionStatus: 'trial',
       trialEndsAt: { $lt: now }
     },
@@ -334,7 +246,6 @@ const resetMonthlyInvoiceCounts = async () => {
 
   await User.updateMany(
     {
-      role: { $ne: 'super_admin' },
       subscriptionStatus: 'active',
       subscriptionEndsAt: { $lt: now }
     },
@@ -346,7 +257,6 @@ const resetMonthlyInvoiceCounts = async () => {
 
 const resolveInvoiceLimit = (user) => {
   if (!user) return PLAN_DEFINITIONS.starter.maxInvoicesPerMonth;
-  if (hasSuperAdminLifetimeAccess(user)) return Infinity;
   if (Number.isFinite(Number(user.invoiceLimit))) return Number(user.invoiceLimit);
   const planId = normalizePlanId(user.plan);
   return PLAN_DEFINITIONS[planId]?.maxInvoicesPerMonth ?? PLAN_DEFINITIONS.starter.maxInvoicesPerMonth;
@@ -361,39 +271,6 @@ const updateSubscriptionFromPayment = async ({
   paystackSubscriptionCode,
   paystackPlanCode
 }) => {
-  if (hasSuperAdminLifetimeAccess(user)) {
-    await normalizeSuperAdminSubscriptionState(user);
-
-    if (business) {
-      business.subscription = {
-        ...(business.subscription || {}),
-        plan: SUPER_ADMIN_PLAN,
-        status: 'active',
-        currentPeriodEnd: null,
-        trialEndsAt: null
-      };
-      await business.save();
-    }
-
-    return Subscription.findOneAndUpdate(
-      { business: user.business },
-      {
-        user: user._id,
-        business: user.business,
-        plan: SUPER_ADMIN_PLAN,
-        billingCycle,
-        status: 'active',
-        subscriptionStart: user.createdAt || new Date(),
-        subscriptionEnd: null,
-        expiresAt: null,
-        paystackCustomerCode: paystackCustomerCode || undefined,
-        paystackSubscriptionCode: paystackSubscriptionCode || undefined,
-        paystackPlanCode: paystackPlanCode || undefined
-      },
-      { upsert: true, new: true, setDefaultsOnInsert: true }
-    );
-  }
-
   const now = new Date();
   const cycleDays = billingCycle === 'yearly' ? 365 : 30;
   const subscriptionEndsAt = addDays(now, cycleDays);
