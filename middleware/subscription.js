@@ -2,6 +2,7 @@ const ErrorResponse = require('../utils/errorResponse');
 const AddOns = require('../models/AddOns');
 const User = require('../models/User');
 const { getPlanDefinition } = require('../utils/planConfig');
+const { isSuperAdmin } = require('../utils/rolePermissions');
 const {
   resolveBillingOwner,
   resolveEffectivePlan,
@@ -15,12 +16,19 @@ const {
 
 const ensureBillingOwner = async (req) => {
   if (req.billingOwner) return req.billingOwner;
+  if (isSuperAdmin(req.user?.role)) {
+    req.billingOwner = req.user;
+    return req.user;
+  }
   const owner = await resolveBillingOwner(req.user);
   req.billingOwner = owner;
   return owner;
 };
 
 const checkSubscription = (options = {}) => async (req, res, next) => {
+  if (isSuperAdmin(req.user?.role)) {
+    return next();
+  }
   const billingOwner = await ensureBillingOwner(req);
   await expireSubscriptionIfNeeded(billingOwner);
   await syncBusinessFromUser(billingOwner);
@@ -37,6 +45,9 @@ const checkSubscription = (options = {}) => async (req, res, next) => {
 };
 
 const checkInvoiceLimit = async (req, res, next) => {
+  if (isSuperAdmin(req.user?.role)) {
+    return next();
+  }
   const billingOwner = await ensureBillingOwner(req);
   await resetInvoiceCountIfNeeded(billingOwner);
   const limit = resolveInvoiceLimit(billingOwner);
@@ -48,6 +59,9 @@ const checkInvoiceLimit = async (req, res, next) => {
 };
 
 const checkFeatureAccess = (featureName) => async (req, res, next) => {
+  if (isSuperAdmin(req.user?.role)) {
+    return next();
+  }
   const billingOwner = await ensureBillingOwner(req);
   await expireSubscriptionIfNeeded(billingOwner);
   await syncBusinessFromUser(billingOwner);
@@ -83,6 +97,9 @@ const checkFeatureAccess = (featureName) => async (req, res, next) => {
 };
 
 const checkTeamLimit = async (req, res, next) => {
+  if (isSuperAdmin(req.user?.role)) {
+    return next();
+  }
   const billingOwner = await ensureBillingOwner(req);
   await expireSubscriptionIfNeeded(billingOwner);
   await syncBusinessFromUser(billingOwner);
