@@ -8,11 +8,33 @@ const parsePositiveInt = (value, fallback) => {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 };
 
+const PLACEHOLDER_VALUES = new Set([
+  'value',
+  'your_value',
+  'yourvalue',
+  'your_email',
+  'your-email',
+  'your password',
+  'your_password',
+  'your-password',
+  'changeme',
+  'replace_me',
+  'replace-me',
+  'null',
+  'undefined'
+]);
+
+const isPlaceholderValue = (value) => {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  return PLACEHOLDER_VALUES.has(normalized);
+};
+
 const firstNonEmpty = (...values) => {
   for (const value of values) {
     if (value === undefined || value === null) continue;
     const normalized = String(value).trim();
-    if (normalized) return normalized;
+    if (!normalized || isPlaceholderValue(normalized)) continue;
+    return normalized;
   }
   return '';
 };
