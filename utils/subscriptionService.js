@@ -3,7 +3,7 @@ const Subscription = require('../models/Subscription');
 const User = require('../models/User');
 const { PLAN_DEFINITIONS, normalizePlanId } = require('./planConfig');
 
-const TRIAL_DAYS = 7;
+const TRIAL_DAYS = 1;
 const TRIAL_PLAN = 'professional';
 const TRIAL_INVOICE_LIMIT = 100;
 const INVOICE_RESET_DAYS = Number(process.env.INVOICE_RESET_DAYS || 0);
