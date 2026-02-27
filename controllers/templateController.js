@@ -3,6 +3,7 @@ const ErrorResponse = require('../utils/errorResponse');
 const CustomTemplate = require('../models/CustomTemplate');
 const TemplatePurchase = require('../models/TemplatePurchase');
 const UserTemplateUnlock = require('../models/UserTemplateUnlock');
+const TemplateEmailSetting = require('../models/TemplateEmailSetting');
 const templateCatalog = require('../data/templates');
 const {
   TEMPLATE_BUNDLE_ID,
@@ -24,6 +25,32 @@ const {
 } = require('../utils/subscriptionService');
 
 const RESERVED_TEMPLATE_NAMES = new Set(['consultant', 'retail']);
+const normalizeTemplateKey = (value) => String(value || '').trim().toLowerCase();
+
+const applyTemplateEmailOverride = (template, emailOverrideMap) => {
+  const keys = [
+    normalizeTemplateKey(template.id),
+    normalizeTemplateKey(template.templateStyle)
+  ].filter(Boolean);
+
+  const override = keys
+    .map((key) => emailOverrideMap.get(key))
+    .find(Boolean);
+
+  if (!override) {
+    return {
+      ...template,
+      emailSubject: template.emailSubject || '',
+      emailMessage: template.emailMessage || ''
+    };
+  }
+
+  return {
+    ...template,
+    emailSubject: override.emailSubject || '',
+    emailMessage: override.emailMessage || ''
+  };
+};
 
 const resolvePlanContext = async (req) => {
   const billingOwner = await resolveBillingOwner(req.user);
@@ -93,15 +120,28 @@ const normalizeTemplate = (template, accessContext) => {
 exports.getTemplates = asyncHandler(async (req, res) => {
   const planContext = await resolvePlanContext(req);
 
-  const [legacyPurchases, unlocks] = await Promise.all([
+  const [legacyPurchases, unlocks, emailSettings] = await Promise.all([
     TemplatePurchase.find({
       business: req.user.business,
       status: 'completed'
     }).select('templateId'),
     UserTemplateUnlock.find({
       business: req.user.business
-    }).select('templateId unlockAllTemplates')
+    }).select('templateId unlockAllTemplates'),
+    TemplateEmailSetting.find({
+      business: req.user.business
+    }).select('templateId emailSubject emailMessage')
   ]);
+
+  const emailOverrideMap = new Map(
+    emailSettings.map((setting) => ([
+      normalizeTemplateKey(setting.templateId),
+      {
+        emailSubject: setting.emailSubject || '',
+        emailMessage: setting.emailMessage || ''
+      }
+    ]))
+  );
 
   const purchaseMap = new Set([
     ...legacyPurchases.map((purchase) => purchase.templateId),
@@ -114,11 +154,13 @@ exports.getTemplates = asyncHandler(async (req, res) => {
     billingOwner.purchasedTemplates.forEach((templateId) => purchaseMap.add(templateId));
   }
 
-  const builtInTemplates = templateCatalog.map((template) => normalizeTemplate(template, {
-    ...planContext,
-    purchaseMap,
-    hasBundle
-  }));
+  const builtInTemplates = templateCatalog
+    .map((template) => normalizeTemplate(template, {
+      ...planContext,
+      purchaseMap,
+      hasBundle
+    }))
+    .map((template) => applyTemplateEmailOverride(template, emailOverrideMap));
 
   const customTemplates = await CustomTemplate.find({
     business: req.user.business
@@ -133,35 +175,37 @@ exports.getTemplates = asyncHandler(async (req, res) => {
     return true;
   });
 
-  const mappedCustomTemplates = filteredCustomTemplates.map((template) => ({
-    id: template._id.toString(),
-    name: template.name,
-    description: template.description,
-    category: 'CUSTOM',
-    isPremium: false,
-    isDefault: template.isDefault || false,
-    isFavorite: template.isFavorite || false,
-    price: 0,
-    isActive: true,
-    previewImage: template.previewImage || '',
-    isIncludedInStarter: true,
-    isIncludedInProfessional: true,
-    isIncludedInEnterprise: true,
-    previewColor: template.previewColor || 'bg-gradient-to-br from-primary-500 to-primary-600',
-    templateStyle: template.templateStyle || 'standard',
-    lineItems: template.lineItems || [],
-    notes: template.notes || '',
-    terms: template.terms || '',
-    emailSubject: template.emailSubject || '',
-    emailMessage: template.emailMessage || '',
-    currency: template.currency || 'USD',
-    paymentTerms: template.paymentTerms || 'net-30',
-    hasAccess: true,
-    accessSource: 'custom',
-    requiredPlan: planContext.planId,
-    canPurchase: false,
-    createdAt: template.createdAt
-  }));
+  const mappedCustomTemplates = filteredCustomTemplates
+    .map((template) => ({
+      id: template._id.toString(),
+      name: template.name,
+      description: template.description,
+      category: 'CUSTOM',
+      isPremium: false,
+      isDefault: template.isDefault || false,
+      isFavorite: template.isFavorite || false,
+      price: 0,
+      isActive: true,
+      previewImage: template.previewImage || '',
+      isIncludedInStarter: true,
+      isIncludedInProfessional: true,
+      isIncludedInEnterprise: true,
+      previewColor: template.previewColor || 'bg-gradient-to-br from-primary-500 to-primary-600',
+      templateStyle: template.templateStyle || 'standard',
+      lineItems: template.lineItems || [],
+      notes: template.notes || '',
+      terms: template.terms || '',
+      emailSubject: template.emailSubject || '',
+      emailMessage: template.emailMessage || '',
+      currency: template.currency || 'USD',
+      paymentTerms: template.paymentTerms || 'net-30',
+      hasAccess: true,
+      accessSource: 'custom',
+      requiredPlan: planContext.planId,
+      canPurchase: false,
+      createdAt: template.createdAt
+    }))
+    .map((template) => applyTemplateEmailOverride(template, emailOverrideMap));
 
   const data = [...builtInTemplates, ...mappedCustomTemplates];
 
@@ -176,7 +220,7 @@ exports.getTemplates = asyncHandler(async (req, res) => {
 // @route   POST /api/v1/templates/custom
 // @access  Private
 exports.createCustomTemplate = asyncHandler(async (req, res, next) => {
-  const { name, description, previewColor } = req.body;
+  const { name, description, previewColor, emailSubject, emailMessage } = req.body;
 
   if (!name || !name.trim()) {
     return next(new ErrorResponse('Template name is required', 400));
@@ -187,12 +231,110 @@ exports.createCustomTemplate = asyncHandler(async (req, res, next) => {
     createdBy: req.user.id,
     name: name.trim(),
     description: description?.trim() || 'Custom invoice template',
-    previewColor: previewColor || 'bg-gradient-to-br from-primary-500 to-primary-600'
+    previewColor: previewColor || 'bg-gradient-to-br from-primary-500 to-primary-600',
+    emailSubject: String(emailSubject || '').trim(),
+    emailMessage: String(emailMessage || '').trim()
   });
 
   res.status(201).json({
     success: true,
     data: customTemplate
+  });
+});
+
+// @desc    Update template email content
+// @route   PUT /api/v1/templates/:id/email-content
+// @access  Private
+exports.updateTemplateEmailContent = asyncHandler(async (req, res, next) => {
+  const templateIdParam = String(req.params.id || '').trim();
+  if (!templateIdParam) {
+    return next(new ErrorResponse('Template id is required', 400));
+  }
+
+  const emailSubject = String(req.body?.emailSubject || '').trim();
+  const emailMessage = String(req.body?.emailMessage || '').trim();
+
+  if (emailSubject.length > 500) {
+    return next(new ErrorResponse('Email subject cannot exceed 500 characters', 400));
+  }
+  if (emailMessage.length > 8000) {
+    return next(new ErrorResponse('Email message cannot exceed 8000 characters', 400));
+  }
+
+  const builtInTemplate = templateCatalog.find((template) => (
+    normalizeTemplateKey(template.id) === normalizeTemplateKey(templateIdParam)
+    || normalizeTemplateKey(template.templateStyle) === normalizeTemplateKey(templateIdParam)
+  ));
+
+  const customTemplate = builtInTemplate
+    ? null
+    : await CustomTemplate.findOne({
+      _id: templateIdParam,
+      business: req.user.business
+    });
+
+  if (!builtInTemplate && !customTemplate) {
+    return next(new ErrorResponse('Template not found', 404));
+  }
+
+  const canonicalTemplateId = builtInTemplate
+    ? builtInTemplate.id
+    : customTemplate._id.toString();
+
+  if (!emailSubject && !emailMessage) {
+    await TemplateEmailSetting.deleteOne({
+      business: req.user.business,
+      templateId: canonicalTemplateId
+    });
+
+    if (customTemplate) {
+      customTemplate.emailSubject = '';
+      customTemplate.emailMessage = '';
+      await customTemplate.save();
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: 'Template email content cleared',
+      data: {
+        templateId: canonicalTemplateId,
+        emailSubject: '',
+        emailMessage: ''
+      }
+    });
+  }
+
+  const emailSetting = await TemplateEmailSetting.findOneAndUpdate(
+    {
+      business: req.user.business,
+      templateId: canonicalTemplateId
+    },
+    {
+      emailSubject,
+      emailMessage,
+      updatedBy: req.user.id
+    },
+    {
+      new: true,
+      upsert: true,
+      setDefaultsOnInsert: true
+    }
+  );
+
+  if (customTemplate) {
+    customTemplate.emailSubject = emailSubject;
+    customTemplate.emailMessage = emailMessage;
+    await customTemplate.save();
+  }
+
+  res.status(200).json({
+    success: true,
+    message: 'Template email content updated',
+    data: {
+      templateId: emailSetting.templateId,
+      emailSubject: emailSetting.emailSubject || '',
+      emailMessage: emailSetting.emailMessage || ''
+    }
   });
 });
 

@@ -1,39 +1,26 @@
 const nodemailer = require('nodemailer');
+const { getMailerTransportConfig } = require('../config/email');
 
-const resolveMailConfig = () => {
-  const host = process.env.MAIL_HOST || process.env.EMAIL_HOST;
-  const user = process.env.MAIL_USER || process.env.EMAIL_USER;
-  const pass = process.env.MAIL_PASS || process.env.EMAIL_PASS;
-  const portValue = process.env.MAIL_PORT || process.env.EMAIL_PORT;
-  const port = Number.parseInt(portValue, 10) || 587;
-  const secureFlag = process.env.MAIL_SECURE || process.env.EMAIL_SECURE;
-  const secure = secureFlag !== undefined
-    ? String(secureFlag).trim().toLowerCase() === 'true'
-    : port === 465;
+let lastConfigKey = '';
+let cachedTransporter = null;
 
-  if (!host || !user || !pass) {
+const serializeConfig = (config) => JSON.stringify(config || {});
+
+const getTransporter = () => {
+  const mailConfig = getMailerTransportConfig();
+  if (!mailConfig) {
     return null;
   }
 
-  return {
-    host,
-    port,
-    secure,
-    auth: {
-      user,
-      pass
-    }
-  };
+  const nextKey = serializeConfig(mailConfig);
+  if (!cachedTransporter || nextKey !== lastConfigKey) {
+    cachedTransporter = nodemailer.createTransport(mailConfig);
+    lastConfigKey = nextKey;
+  }
+
+  return cachedTransporter;
 };
 
-const mailConfig = resolveMailConfig();
-
-if (!mailConfig) {
-  console.warn(
-    'Mailer not configured. Set MAIL_HOST/MAIL_PORT/MAIL_USER/MAIL_PASS (or EMAIL_* equivalents) to enable email delivery.'
-  );
-}
-
-const transporter = mailConfig ? nodemailer.createTransport(mailConfig) : null;
-
-module.exports = transporter;
+module.exports = {
+  getTransporter
+};

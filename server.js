@@ -30,6 +30,9 @@ app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 const envOrigins = process.env.CORS_ORIGIN
   ? process.env.CORS_ORIGIN.split(',').map((origin) => origin.trim()).filter(Boolean)
   : [];
+const appOrigins = [process.env.FRONTEND_URL, process.env.REACT_APP_URL]
+  .map((origin) => (origin ? origin.trim() : ''))
+  .filter(Boolean);
 
 const allowedOrigins = [
   'http://localhost:7000',
@@ -38,6 +41,7 @@ const allowedOrigins = [
   'http://localhost:5173',
   'http://localhost:5174',
   'https://ledgerly-weld.vercel.app',
+  ...appOrigins,
   ...envOrigins
 ];
 

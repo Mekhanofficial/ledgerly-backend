@@ -149,6 +149,19 @@ const InvoiceSchema = new mongoose.Schema({
   paymentTerms: String,
   notes: String,
   terms: String,
+  templateStyle: {
+    type: String,
+    trim: true,
+    default: 'standard'
+  },
+  emailSubject: {
+    type: String,
+    trim: true
+  },
+  emailMessage: {
+    type: String,
+    trim: true
+  },
   footerNotes: String,
   sentDate: Date,
   viewedDate: Date,

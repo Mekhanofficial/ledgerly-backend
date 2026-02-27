@@ -468,6 +468,542 @@ const templates = [
     templateStyle: 'retail'
   },
   {
+    id: 'professionalClassic',
+    name: 'Professional Classic',
+    description: 'Traditional invoice with Bill To and Ship To sections for service businesses',
+    colors: {
+      primary: [44, 62, 80],
+      secondary: [52, 73, 94],
+      accent: [245, 247, 250],
+      text: [33, 37, 41],
+      border: [206, 212, 218]
+    },
+    fonts: {
+      title: 'helvetica-bold',
+      body: 'helvetica',
+      accent: 'helvetica-light'
+    },
+    layout: {
+      showLogo: true,
+      showWatermark: false,
+      showHeaderBorder: true,
+      showFooter: true,
+      hasDualAddress: true,
+      headerStyle: 'letterhead'
+    },
+    category: 'PREMIUM',
+    isPremium: true,
+    isDefault: false,
+    price: 7.99,
+    isActive: true,
+    previewImage: '',
+    isIncludedInStarter: false,
+    isIncludedInProfessional: true,
+    isIncludedInEnterprise: true,
+    features: [
+      'Bill To and Ship To columns',
+      'PO number support',
+      'Classic letterhead layout'
+    ],
+    previewColor: 'bg-gradient-to-br from-slate-700 to-slate-800',
+    popularity: 92,
+    lastUpdated: '2026-02-11',
+    tags: ['classic', 'professional', 'service'],
+    templateStyle: 'professionalClassic'
+  },
+  {
+    id: 'modernCorporate',
+    name: 'Modern Corporate',
+    description: 'Bold corporate layout with strong brand header and modern invoice table',
+    colors: {
+      primary: [0, 70, 140],
+      secondary: [0, 110, 200],
+      accent: [240, 248, 255],
+      text: [38, 50, 56],
+      border: [200, 215, 230]
+    },
+    fonts: {
+      title: 'helvetica-bold',
+      body: 'helvetica',
+      accent: 'helvetica-oblique'
+    },
+    layout: {
+      showLogo: true,
+      showWatermark: true,
+      watermarkText: 'CORPORATE',
+      showHeaderBorder: false,
+      showFooter: true,
+      headerStyle: 'brand-bar'
+    },
+    category: 'PREMIUM',
+    isPremium: true,
+    isDefault: false,
+    price: 9.99,
+    isActive: true,
+    previewImage: '',
+    isIncludedInStarter: false,
+    isIncludedInProfessional: true,
+    isIncludedInEnterprise: true,
+    features: [
+      'Branded header bar',
+      'Modern table styling',
+      'Corporate look and feel'
+    ],
+    previewColor: 'bg-gradient-to-br from-blue-800 to-blue-600',
+    popularity: 90,
+    lastUpdated: '2026-02-11',
+    tags: ['corporate', 'agency', 'modern'],
+    templateStyle: 'modernCorporate'
+  },
+  {
+    id: 'cleanBilling',
+    name: 'Clean Billing',
+    description: 'Minimal and airy billing design focused on readability',
+    colors: {
+      primary: [100, 116, 139],
+      secondary: [148, 163, 184],
+      accent: [248, 250, 252],
+      text: [30, 41, 59],
+      border: [203, 213, 225]
+    },
+    fonts: {
+      title: 'helvetica-light',
+      body: 'helvetica',
+      accent: 'helvetica-light'
+    },
+    layout: {
+      showLogo: false,
+      showWatermark: false,
+      showHeaderBorder: true,
+      showFooter: true,
+      headerStyle: 'thin-line'
+    },
+    category: 'PREMIUM',
+    isPremium: true,
+    isDefault: false,
+    price: 6.99,
+    isActive: true,
+    previewImage: '',
+    isIncludedInStarter: false,
+    isIncludedInProfessional: true,
+    isIncludedInEnterprise: true,
+    features: [
+      'Minimalist structure',
+      'Soft neutral palette',
+      'Billing-first layout'
+    ],
+    previewColor: 'bg-gradient-to-br from-slate-400 to-slate-500',
+    popularity: 85,
+    lastUpdated: '2026-02-11',
+    tags: ['clean', 'minimal', 'billing'],
+    templateStyle: 'cleanBilling'
+  },
+  {
+    id: 'retailReceipt',
+    name: 'Retail Receipt',
+    description: 'Retail-friendly invoice style with item-focused presentation',
+    colors: {
+      primary: [13, 148, 136],
+      secondary: [20, 184, 166],
+      accent: [240, 253, 250],
+      text: [31, 41, 55],
+      border: [153, 246, 228]
+    },
+    fonts: {
+      title: 'helvetica-bold',
+      body: 'helvetica',
+      accent: 'helvetica'
+    },
+    layout: {
+      showLogo: true,
+      showWatermark: false,
+      showHeaderBorder: false,
+      showFooter: true,
+      headerStyle: 'simple'
+    },
+    category: 'PREMIUM',
+    isPremium: true,
+    isDefault: false,
+    price: 8.99,
+    isActive: true,
+    previewImage: '',
+    isIncludedInStarter: false,
+    isIncludedInProfessional: true,
+    isIncludedInEnterprise: true,
+    features: [
+      'Item-focused line rows',
+      'SKU-friendly format',
+      'Store-ready styling'
+    ],
+    previewColor: 'bg-gradient-to-br from-teal-600 to-cyan-600',
+    popularity: 88,
+    lastUpdated: '2026-02-11',
+    tags: ['retail', 'receipt', 'store'],
+    templateStyle: 'retailReceipt'
+  },
+  {
+    id: 'simpleElegant',
+    name: 'Simple Elegant',
+    description: 'Subtle formal style with centered headings and serif typography',
+    colors: {
+      primary: [55, 65, 81],
+      secondary: [75, 85, 99],
+      accent: [249, 250, 251],
+      text: [17, 24, 39],
+      border: [229, 231, 235]
+    },
+    fonts: {
+      title: 'times-bold',
+      body: 'times',
+      accent: 'times'
+    },
+    layout: {
+      showLogo: false,
+      showWatermark: false,
+      showHeaderBorder: true,
+      showFooter: false,
+      headerStyle: 'centered'
+    },
+    category: 'PREMIUM',
+    isPremium: true,
+    isDefault: false,
+    price: 7.49,
+    isActive: true,
+    previewImage: '',
+    isIncludedInStarter: false,
+    isIncludedInProfessional: true,
+    isIncludedInEnterprise: true,
+    features: [
+      'Centered heading',
+      'Formal serif style',
+      'Minimal visual noise'
+    ],
+    previewColor: 'bg-gradient-to-br from-gray-600 to-gray-700',
+    popularity: 82,
+    lastUpdated: '2026-02-11',
+    tags: ['elegant', 'formal', 'serif'],
+    templateStyle: 'simpleElegant'
+  },
+  {
+    id: 'urbanEdge',
+    name: 'Urban Edge',
+    description: 'Contemporary asymmetric layout with strong accent blocks',
+    colors: {
+      primary: [202, 138, 4],
+      secondary: [217, 119, 6],
+      accent: [255, 251, 235],
+      text: [28, 25, 23],
+      border: [245, 158, 11]
+    },
+    fonts: {
+      title: 'helvetica-bold',
+      body: 'helvetica',
+      accent: 'helvetica-bold'
+    },
+    layout: {
+      showLogo: true,
+      showWatermark: true,
+      watermarkText: 'URBAN',
+      showHeaderBorder: true,
+      showFooter: true,
+      hasSignature: true,
+      headerStyle: 'asymmetric'
+    },
+    category: 'PREMIUM',
+    isPremium: true,
+    isDefault: false,
+    price: 10.99,
+    isActive: true,
+    previewImage: '',
+    isIncludedInStarter: false,
+    isIncludedInProfessional: true,
+    isIncludedInEnterprise: true,
+    features: [
+      'Asymmetric accents',
+      'Signature-ready footer',
+      'Bold urban palette'
+    ],
+    previewColor: 'bg-gradient-to-br from-amber-600 to-orange-600',
+    popularity: 95,
+    lastUpdated: '2026-02-11',
+    tags: ['urban', 'bold', 'asymmetric'],
+    templateStyle: 'urbanEdge'
+  },
+  {
+    id: 'creativeFlow',
+    name: 'Creative Flow',
+    description: 'Art-inspired layout with fluid separators and decorative sections',
+    colors: {
+      primary: [147, 51, 234],
+      secondary: [168, 85, 247],
+      accent: [250, 245, 255],
+      text: [31, 41, 55],
+      border: [216, 180, 254]
+    },
+    fonts: {
+      title: 'helvetica-bold',
+      body: 'helvetica',
+      accent: 'helvetica-light'
+    },
+    layout: {
+      showLogo: true,
+      showWatermark: true,
+      watermarkText: 'CREATIVE',
+      showHeaderBorder: false,
+      showFooter: true,
+      hasWave: true,
+      headerStyle: 'flow'
+    },
+    category: 'PREMIUM',
+    isPremium: true,
+    isDefault: false,
+    price: 11.99,
+    isActive: true,
+    previewImage: '',
+    isIncludedInStarter: false,
+    isIncludedInProfessional: true,
+    isIncludedInEnterprise: true,
+    features: [
+      'Fluid separators',
+      'Creative color blend',
+      'Decorative footer treatment'
+    ],
+    previewColor: 'bg-gradient-to-br from-purple-600 to-fuchsia-600',
+    popularity: 94,
+    lastUpdated: '2026-02-11',
+    tags: ['creative', 'flow', 'artistic'],
+    templateStyle: 'creativeFlow'
+  },
+  {
+    id: 'glassmorphic',
+    name: 'Glassmorphic',
+    description: 'Translucent layered style with subtle neon accents',
+    colors: {
+      primary: [88, 101, 242],
+      secondary: [121, 134, 255],
+      accent: [255, 255, 255],
+      text: [15, 23, 42],
+      border: [203, 213, 225]
+    },
+    fonts: {
+      title: 'helvetica-bold',
+      body: 'helvetica',
+      accent: 'helvetica-light'
+    },
+    layout: {
+      showLogo: true,
+      showWatermark: true,
+      watermarkText: 'GLASS',
+      showHeaderBorder: false,
+      showFooter: true,
+      hasBackdropBlur: true,
+      hasNeonGlow: true,
+      headerStyle: 'floating'
+    },
+    category: 'ELITE',
+    isPremium: true,
+    isDefault: false,
+    price: 19.99,
+    isActive: true,
+    previewImage: '',
+    isIncludedInStarter: false,
+    isIncludedInProfessional: false,
+    isIncludedInEnterprise: true,
+    features: [
+      'Glass-like surface feel',
+      'Neon accent treatment',
+      'Floating content cards'
+    ],
+    previewColor: 'bg-gradient-to-br from-indigo-400 via-purple-400 to-pink-400',
+    popularity: 97,
+    lastUpdated: '2026-02-12',
+    tags: ['glass', 'neon', 'modern'],
+    templateStyle: 'glassmorphic'
+  },
+  {
+    id: 'neoBrutalist',
+    name: 'Neo-Brutalist',
+    description: 'High-contrast brutalist style with oversized typography',
+    colors: {
+      primary: [255, 89, 94],
+      secondary: [54, 79, 107],
+      accent: [252, 196, 54],
+      text: [10, 10, 10],
+      border: [0, 0, 0]
+    },
+    fonts: {
+      title: 'helvetica-bold',
+      body: 'courier',
+      accent: 'helvetica-bold'
+    },
+    layout: {
+      showLogo: true,
+      showWatermark: false,
+      showHeaderBorder: false,
+      showFooter: true,
+      hasAsymmetricGrid: true,
+      hasOversizedText: true,
+      headerStyle: 'brutal'
+    },
+    category: 'ELITE',
+    isPremium: true,
+    isDefault: false,
+    price: 16.99,
+    isActive: true,
+    previewImage: '',
+    isIncludedInStarter: false,
+    isIncludedInProfessional: false,
+    isIncludedInEnterprise: true,
+    features: [
+      'Oversized headings',
+      'Raw brutalist blocks',
+      'Asymmetric structure'
+    ],
+    previewColor: 'bg-gradient-to-br from-red-600 to-amber-500',
+    popularity: 91,
+    lastUpdated: '2026-02-12',
+    tags: ['brutalist', 'bold', 'asymmetric'],
+    templateStyle: 'neoBrutalist'
+  },
+  {
+    id: 'holographic',
+    name: 'Holographic',
+    description: 'Iridescent gradient design with premium futuristic styling',
+    colors: {
+      primary: [168, 85, 247],
+      secondary: [236, 72, 153],
+      accent: [251, 146, 60],
+      text: [255, 255, 255],
+      border: [255, 255, 255]
+    },
+    fonts: {
+      title: 'helvetica-bold',
+      body: 'helvetica',
+      accent: 'helvetica-light'
+    },
+    layout: {
+      showLogo: true,
+      showWatermark: true,
+      watermarkText: 'HOLO',
+      showHeaderBorder: false,
+      showFooter: true,
+      hasIridescentGradient: true,
+      hasMetallicEdge: true,
+      headerStyle: 'prism'
+    },
+    category: 'ELITE',
+    isPremium: true,
+    isDefault: false,
+    price: 18.99,
+    isActive: true,
+    previewImage: '',
+    isIncludedInStarter: false,
+    isIncludedInProfessional: false,
+    isIncludedInEnterprise: true,
+    features: [
+      'Iridescent gradients',
+      'Premium metallic accenting',
+      'Luxury visual style'
+    ],
+    previewColor: 'bg-gradient-to-r from-purple-500 via-pink-500 to-orange-500',
+    popularity: 99,
+    lastUpdated: '2026-02-12',
+    tags: ['holographic', 'iridescent', 'luxury'],
+    templateStyle: 'holographic'
+  },
+  {
+    id: 'minimalistDark',
+    name: 'Minimalist Dark',
+    description: 'Dark-mode minimalist invoice with subtle glow accents',
+    colors: {
+      primary: [0, 122, 255],
+      secondary: [88, 86, 214],
+      accent: [44, 44, 46],
+      text: [255, 255, 255],
+      border: [72, 72, 74]
+    },
+    fonts: {
+      title: 'courier',
+      body: 'courier',
+      accent: 'helvetica-light'
+    },
+    layout: {
+      showLogo: true,
+      showWatermark: true,
+      watermarkText: 'DARK',
+      showHeaderBorder: true,
+      showFooter: true,
+      hasDarkMode: true,
+      hasGlowEffect: true,
+      headerStyle: 'terminal'
+    },
+    category: 'ELITE',
+    isPremium: true,
+    isDefault: false,
+    price: 14.99,
+    isActive: true,
+    previewImage: '',
+    isIncludedInStarter: false,
+    isIncludedInProfessional: false,
+    isIncludedInEnterprise: true,
+    features: [
+      'Dark mode design',
+      'Monospace-first styling',
+      'Subtle glow accents'
+    ],
+    previewColor: 'bg-gradient-to-br from-gray-900 via-blue-900 to-gray-900',
+    popularity: 94,
+    lastUpdated: '2026-02-12',
+    tags: ['dark', 'minimal', 'tech'],
+    templateStyle: 'minimalistDark'
+  },
+  {
+    id: 'organicEco',
+    name: 'Organic Eco',
+    description: 'Nature-inspired invoice style with soft curves and calm tones',
+    colors: {
+      primary: [34, 197, 94],
+      secondary: [74, 222, 128],
+      accent: [254, 249, 195],
+      text: [20, 83, 45],
+      border: [187, 247, 208]
+    },
+    fonts: {
+      title: 'georgia',
+      body: 'georgia',
+      accent: 'helvetica-light'
+    },
+    layout: {
+      showLogo: true,
+      showWatermark: true,
+      watermarkText: 'ECO',
+      showHeaderBorder: false,
+      showFooter: true,
+      hasWaveBorder: true,
+      hasBotanicalIcon: true,
+      headerStyle: 'rounded'
+    },
+    category: 'ELITE',
+    isPremium: true,
+    isDefault: false,
+    price: 15.99,
+    isActive: true,
+    previewImage: '',
+    isIncludedInStarter: false,
+    isIncludedInProfessional: false,
+    isIncludedInEnterprise: true,
+    features: [
+      'Natural palette',
+      'Organic curved sections',
+      'Eco-forward visual language'
+    ],
+    previewColor: 'bg-gradient-to-br from-green-400 to-emerald-600',
+    popularity: 89,
+    lastUpdated: '2026-02-12',
+    tags: ['eco', 'organic', 'natural'],
+    templateStyle: 'organicEco'
+  },
+  {
     id: 'medical',
     name: 'Medical',
     description: 'Professional template for healthcare and medical services',

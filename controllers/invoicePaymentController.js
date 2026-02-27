@@ -33,6 +33,12 @@ const getBackendBaseUrl = (req) => {
   return `${protocol}://${host}`;
 };
 
+const buildPublicPaymentPortalUrl = (req, slug) => {
+  const normalizedSlug = String(slug || '').trim();
+  if (!normalizedSlug) return '';
+  return `${getBackendBaseUrl(req)}/api/v1/invoices/public/${encodeURIComponent(normalizedSlug)}/pay`;
+};
+
 const buildInvoiceResultUrl = (req, invoice, status) => {
   const baseUrl = getFrontendBaseUrl(req);
   const slug = invoice?.publicSlug || invoice?._id;
@@ -227,12 +233,82 @@ const applyVerifiedInvoicePayment = async ({
   return { invoice, payment, isDuplicate: false };
 };
 
-const buildPublicInvoicePayload = (invoice, businessWithSecret = null) => {
+const initializePublicInvoicePayment = async ({ req, invoice }) => {
+  if (!invoice) {
+    throw new ErrorResponse('Invoice not found', 404);
+  }
+
+  if (TERMINAL_INVOICE_STATUSES.has(String(invoice.status || '').toLowerCase())) {
+    throw new ErrorResponse('This invoice is not available for payment', 400);
+  }
+
+  if (Number(invoice.balance || 0) <= 0) {
+    throw new ErrorResponse('Invoice has no outstanding balance', 400);
+  }
+
+  const business = await loadBusinessWithSecret(invoice.business?._id || invoice.business);
+  const { publicKey, secretKey } = validateBusinessPaystackConnection(business);
+
+  const customerEmail = invoice.clientEmail || invoice.customer?.email;
+  if (!customerEmail) {
+    throw new ErrorResponse('Customer email is required to initialize payment', 400);
+  }
+
+  const currency = String(invoice.currency || business.currency || 'NGN').trim().toUpperCase();
+  const reference = `inv_${invoice._id}_${Date.now()}`;
+  const callbackUrl = `${getBackendBaseUrl(req)}/api/v1/payments/verify?source=invoice`;
+
+  const payload = {
+    email: customerEmail,
+    amount: toMinorUnits(invoice.balance),
+    currency,
+    reference,
+    callback_url: callbackUrl,
+    metadata: {
+      type: 'invoice_payment',
+      invoiceId: invoice._id.toString(),
+      businessId: (business._id || invoice.business?._id || invoice.business).toString(),
+      publicSlug: invoice.publicSlug,
+      invoiceNumber: invoice.invoiceNumber
+    }
+  };
+
+  const response = await initializeBusinessTransaction(secretKey, payload);
+  if (!response?.status || !response?.data) {
+    throw new ErrorResponse('Unable to initialize payment', 400);
+  }
+
+  invoice.transactionReference = reference;
+  invoice.transactionAmount = Number(invoice.balance);
+  invoice.transactionCurrency = currency;
+  invoice.paymentInitializedAt = new Date();
+  invoice.paymentReference = reference;
+  invoice.paymentGateway = 'paystack';
+  invoice.paymentGatewayStatus = 'initialized';
+  await invoice.save();
+
+  return {
+    invoice,
+    business,
+    payment: {
+      provider: 'paystack',
+      publicKey,
+      authorizationUrl: response.data.authorization_url,
+      accessCode: response.data.access_code,
+      reference: response.data.reference || reference,
+      amount: invoice.transactionAmount,
+      currency
+    }
+  };
+};
+
+const buildPublicInvoicePayload = (req, invoice, businessWithSecret = null) => {
   const amountDue = Number(invoice?.balance ?? 0);
   const total = Number(invoice?.total ?? 0);
   const customerName = invoice?.customer?.name || 'Customer';
   const customerEmail = invoice?.clientEmail || invoice?.customer?.email || '';
   const status = String(invoice?.status || '').toLowerCase();
+  const publicSlug = invoice?.publicSlug;
 
   const business = invoice?.business || {};
   const paystackPublicKey = businessWithSecret?.paystack?.publicKey || business?.paystack?.publicKey || '';
@@ -265,6 +341,7 @@ const buildPublicInvoicePayload = (invoice, businessWithSecret = null) => {
       currency: business.currency || invoice.currency || 'NGN'
     },
     payment: {
+      portalUrl: buildPublicPaymentPortalUrl(req, publicSlug),
       canPayOnline:
         !TERMINAL_INVOICE_STATUSES.has(status)
         && amountDue > 0
@@ -291,7 +368,7 @@ exports.getPublicInvoice = asyncHandler(async (req, res, next) => {
 
   res.status(200).json({
     success: true,
-    data: buildPublicInvoicePayload(invoice)
+    data: buildPublicInvoicePayload(req, invoice)
   });
 });
 
@@ -305,71 +382,102 @@ exports.initializePublicInvoicePaystackPayment = asyncHandler(async (req, res, n
     return next(new ErrorResponse('Invoice not found', 404));
   }
 
-  if (TERMINAL_INVOICE_STATUSES.has(String(invoice.status || '').toLowerCase())) {
-    return next(new ErrorResponse('This invoice is not available for payment', 400));
-  }
-
-  if (Number(invoice.balance || 0) <= 0) {
-    return next(new ErrorResponse('Invoice has no outstanding balance', 400));
-  }
-
-  const business = await loadBusinessWithSecret(invoice.business?._id || invoice.business);
-  const { publicKey, secretKey } = validateBusinessPaystackConnection(business);
-
-  const customerEmail = invoice.clientEmail || invoice.customer?.email;
-  if (!customerEmail) {
-    return next(new ErrorResponse('Customer email is required to initialize payment', 400));
-  }
-
-  const currency = String(invoice.currency || business.currency || 'NGN').trim().toUpperCase();
-  const reference = `inv_${invoice._id}_${Date.now()}`;
-  const callbackUrl = `${getBackendBaseUrl(req)}/api/v1/payments/verify?source=invoice`;
-
-  const payload = {
-    email: customerEmail,
-    amount: toMinorUnits(invoice.balance),
-    currency,
-    reference,
-    callback_url: callbackUrl,
-    metadata: {
-      type: 'invoice_payment',
-      invoiceId: invoice._id.toString(),
-      businessId: (business._id || invoice.business?._id || invoice.business).toString(),
-      publicSlug: invoice.publicSlug,
-      invoiceNumber: invoice.invoiceNumber
-    }
-  };
-
-  const response = await initializeBusinessTransaction(secretKey, payload);
-  if (!response?.status || !response?.data) {
-    return next(new ErrorResponse('Unable to initialize payment', 400));
-  }
-
-  invoice.transactionReference = reference;
-  invoice.transactionAmount = Number(invoice.balance);
-  invoice.transactionCurrency = currency;
-  invoice.paymentInitializedAt = new Date();
-  invoice.paymentReference = reference;
-  invoice.paymentGateway = 'paystack';
-  invoice.paymentGatewayStatus = 'initialized';
-  await invoice.save();
+  const initialized = await initializePublicInvoicePayment({ req, invoice });
 
   res.status(200).json({
     success: true,
     data: {
-      invoice: buildPublicInvoicePayload(invoice, business),
-      payment: {
-        provider: 'paystack',
-        publicKey,
-        authorizationUrl: response.data.authorization_url,
-        accessCode: response.data.access_code,
-        reference: response.data.reference || reference,
-        amount: invoice.transactionAmount,
-        currency
-      }
+      invoice: buildPublicInvoicePayload(req, initialized.invoice, initialized.business),
+      payment: initialized.payment
     }
   });
 });
+
+// @desc    Redirect a public invoice link directly into Paystack checkout
+// @route   GET /api/v1/invoices/public/:slug/pay
+// @access  Public
+exports.redirectPublicInvoicePaymentPortal = asyncHandler(async (req, res, next) => {
+  const invoice = await loadPublicInvoice(req.params.slug);
+
+  if (!invoice) {
+    return next(new ErrorResponse('Invoice not found', 404));
+  }
+
+  try {
+    const initialized = await initializePublicInvoicePayment({ req, invoice });
+    if (!initialized?.payment?.authorizationUrl) {
+      throw new ErrorResponse('Unable to initialize payment', 400);
+    }
+
+    return res.redirect(initialized.payment.authorizationUrl);
+  } catch (error) {
+    const frontendBaseUrl = getFrontendBaseUrl(req);
+    if (frontendBaseUrl && invoice.publicSlug) {
+      const fallbackUrl = `${frontendBaseUrl}/invoice/pay/${invoice.publicSlug}?payError=${encodeURIComponent(error?.message || 'Unable to start payment')}`;
+      return res.redirect(fallbackUrl);
+    }
+
+    return next(error);
+  }
+});
+
+const sanitizeErrorMessage = (value) => {
+  const raw = String(value || '').trim();
+  if (!raw) return 'Verification failed';
+  return raw.length > 240 ? `${raw.slice(0, 237)}...` : raw;
+};
+
+const buildInvoicePayPageUrl = (req, invoice, extras = {}) => {
+  const baseUrl = getFrontendBaseUrl(req);
+  const slug = invoice?.publicSlug || invoice?._id;
+  if (!baseUrl || !slug) return '';
+
+  const params = new URLSearchParams();
+  Object.entries(extras).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === '') return;
+    params.set(key, String(value));
+  });
+
+  const query = params.toString();
+  return `${baseUrl}/invoice/pay/${slug}${query ? `?${query}` : ''}`;
+};
+
+const buildInvoiceResultFallbackUrl = (req, invoice, status, reason) => {
+  const resultUrl = buildInvoiceResultUrl(req, invoice, status);
+  if (!resultUrl) return '';
+
+  if (!reason) return resultUrl;
+
+  const delimiter = resultUrl.includes('?') ? '&' : '?';
+  return `${resultUrl}${delimiter}reason=${encodeURIComponent(reason)}`;
+};
+
+const respondWithInvoicePaymentError = (req, res, invoice, reason, statusCode = 400) => {
+  const safeReason = sanitizeErrorMessage(reason);
+  const fallbackPayPageUrl = buildInvoicePayPageUrl(req, invoice, { payError: safeReason });
+  if (fallbackPayPageUrl) {
+    return res.redirect(fallbackPayPageUrl);
+  }
+
+  const failureUrl = buildInvoiceResultFallbackUrl(req, invoice, 'failed', safeReason);
+  if (failureUrl) {
+    return res.redirect(failureUrl);
+  }
+
+  return res.status(statusCode).json({
+    success: false,
+    data: {
+      invoice: invoice
+        ? {
+            publicSlug: invoice.publicSlug,
+            invoiceNumber: invoice.invoiceNumber,
+            status: invoice.status
+          }
+        : null,
+      reason: safeReason
+    }
+  });
+};
 
 const respondWithInvoicePaymentResult = (req, res, invoice, isSuccess, payload = {}) => {
   const targetUrl = buildInvoiceResultUrl(req, invoice, isSuccess ? 'success' : 'failed');
@@ -408,26 +516,45 @@ exports.verifyPublicInvoicePayment = asyncHandler(async (req, res, next) => {
   const reference = String(req.query.reference || req.query.trxref || '').trim();
 
   if (!reference) {
-    return next(new ErrorResponse('Reference is required', 400));
+    const reason = 'Reference is required';
+    const fallbackBaseUrl = getFrontendBaseUrl(req);
+    if (fallbackBaseUrl) {
+      return res.redirect(`${fallbackBaseUrl}/invoice/failed/unknown?reason=${encodeURIComponent(reason)}`);
+    }
+    return next(new ErrorResponse(reason, 400));
   }
 
   const invoice = await loadInvoiceByReference(reference);
   if (!invoice) {
-    return next(new ErrorResponse('Invoice not found', 404));
+    const reason = 'Invoice not found';
+    const fallbackBaseUrl = getFrontendBaseUrl(req);
+    if (fallbackBaseUrl) {
+      return res.redirect(`${fallbackBaseUrl}/invoice/failed/unknown?reason=${encodeURIComponent(reason)}`);
+    }
+    return next(new ErrorResponse(reason, 404));
   }
 
   const business = await loadBusinessWithSecret(invoice.business?._id || invoice.business);
-  const { secretKey } = validateBusinessPaystackConnection(business);
+  let secretKey = '';
+
+  try {
+    ({ secretKey } = validateBusinessPaystackConnection(business));
+  } catch (error) {
+    return respondWithInvoicePaymentError(
+      req,
+      res,
+      invoice,
+      error?.message || 'Online payments are not configured for this invoice',
+      error?.statusCode || 400
+    );
+  }
 
   try {
     const response = await verifyBusinessTransaction(secretKey, reference);
     const paystackData = response?.data;
 
     if (!paystackData) {
-      return respondWithInvoicePaymentResult(req, res, invoice, false, {
-        reference,
-        reason: 'Unable to verify payment'
-      });
+      return respondWithInvoicePaymentError(req, res, invoice, 'Unable to verify payment', 400);
     }
 
     await applyVerifiedInvoicePayment({
@@ -443,10 +570,13 @@ exports.verifyPublicInvoicePayment = asyncHandler(async (req, res, next) => {
     });
   } catch (error) {
     console.error('Invoice payment verification failed:', error?.response?.data || error?.message || error);
-    return respondWithInvoicePaymentResult(req, res, invoice, false, {
-      reference,
-      reason: error?.response?.data?.message || error?.message || 'Verification failed'
-    });
+    return respondWithInvoicePaymentError(
+      req,
+      res,
+      invoice,
+      error?.response?.data?.message || error?.message || 'Verification failed',
+      error?.statusCode || 400
+    );
   }
 });
 

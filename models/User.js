@@ -59,6 +59,14 @@ const UserSchema = new mongoose.Schema({
     default: false
   },
   verificationToken: String,
+  emailVerificationOtp: {
+    type: String,
+    select: false
+  },
+  emailVerificationOtpExpire: {
+    type: Date,
+    select: false
+  },
   resetPasswordToken: String,
   resetPasswordExpire: Date,
   invitationToken: String,
@@ -185,6 +193,19 @@ UserSchema.methods.getInvitationToken = function() {
   this.invitationExpire = Date.now() + 7 * 24 * 60 * 60 * 1000; // 7 days
 
   return inviteToken;
+};
+
+UserSchema.methods.generateEmailVerificationOtp = function() {
+  const otp = Math.floor(100000 + Math.random() * 900000).toString();
+
+  this.emailVerificationOtp = crypto
+    .createHash('sha256')
+    .update(otp)
+    .digest('hex');
+
+  this.emailVerificationOtpExpire = Date.now() + 10 * 60 * 1000;
+
+  return otp;
 };
 
 module.exports = mongoose.model('User', UserSchema);

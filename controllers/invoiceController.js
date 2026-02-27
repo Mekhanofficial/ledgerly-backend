@@ -22,6 +22,7 @@ const {
   isClient,
   isAccountant
 } = require('../utils/rolePermissions');
+const invoiceTemplates = require('../data/templates');
 
 const isMultiCurrencyAllowed = (plan) =>
   ['professional', 'enterprise'].includes(normalizePlanId(plan));
@@ -35,6 +36,160 @@ const resolveInvoiceCurrency = (business, requestedCurrency) => {
 const getEffectiveRole = (req) => req.user?.effectiveRole || normalizeRole(req.user?.role);
 
 const hasValue = (value) => value !== undefined && value !== null;
+
+const escapeHtml = (value) =>
+  String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+
+const normalizeTemplateStyle = (value) => String(value || '').trim();
+
+const TEMPLATE_STYLE_ALIASES = {
+  modern: 'modernCorporate',
+  clean: 'cleanBilling',
+  retail: 'retailReceipt',
+  elegant: 'simpleElegant',
+  urban: 'urbanEdge',
+  creative: 'creativeFlow',
+  professionalclassic: 'professionalClassic',
+  moderncorporate: 'modernCorporate',
+  cleanbilling: 'cleanBilling',
+  retailreceipt: 'retailReceipt',
+  simpleelegant: 'simpleElegant',
+  urbanedge: 'urbanEdge',
+  creativeflow: 'creativeFlow',
+  neobrutalist: 'neoBrutalist',
+  minimaldark: 'minimalistDark',
+  minimalistdark: 'minimalistDark',
+  organiceco: 'organicEco',
+  corporatepro: 'corporatePro',
+  creativestudio: 'creativeStudio',
+  techmodern: 'techModern'
+};
+
+const normalizeTemplateLookupValue = (value) => {
+  const normalized = normalizeTemplateStyle(value).toLowerCase();
+  if (!normalized) return '';
+  const aliased = TEMPLATE_STYLE_ALIASES[normalized] || normalized;
+  return normalizeTemplateStyle(aliased).toLowerCase();
+};
+
+const resolveInvoiceTemplateMeta = (templateStyle) => {
+  const normalized = normalizeTemplateLookupValue(templateStyle);
+  if (normalized) {
+    const matched = invoiceTemplates.find((template) =>
+      normalizeTemplateLookupValue(template.id) === normalized
+      || normalizeTemplateLookupValue(template.templateStyle) === normalized
+    );
+    if (matched) return matched;
+  }
+
+  return invoiceTemplates.find((template) => template.id === 'standard') || invoiceTemplates[0] || {};
+};
+
+const resolveCanonicalTemplateStyle = (templateStyle, fallback = 'standard') => {
+  const meta = resolveInvoiceTemplateMeta(templateStyle || fallback);
+  return meta?.id || normalizeTemplateStyle(templateStyle) || fallback;
+};
+
+const resolveCssColor = (color, fallback) => {
+  if (Array.isArray(color) && color.length === 3) {
+    return `rgb(${color[0]}, ${color[1]}, ${color[2]})`;
+  }
+  return fallback;
+};
+
+const formatDisplayDate = (value) => {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return '';
+  }
+  return date.toLocaleDateString();
+};
+
+const getConfiguredFrontendBaseUrl = () =>
+  (
+    process.env.APP_BASE_URL
+    || process.env.FRONTEND_URL
+    || process.env.REACT_APP_URL
+    || ''
+  ).replace(/\/+$/, '');
+
+const getBackendBaseUrl = (req) => {
+  const configured = (process.env.BACKEND_BASE_URL || '').replace(/\/+$/, '');
+  if (configured) return configured;
+
+  const forwardedProto = req.headers['x-forwarded-proto'];
+  const protocol = String(forwardedProto || req.protocol || 'http').split(',')[0].trim();
+  const host = req.get('host');
+  return `${protocol}://${host}`;
+};
+
+const interpolateTemplateText = (input, context = {}) => {
+  return String(input || '').replace(/{{\s*([a-zA-Z0-9_]+)\s*}}/g, (match, key) => {
+    const resolved = context[key];
+    return resolved === undefined || resolved === null ? '' : String(resolved);
+  });
+};
+
+const messageToHtml = (message) => {
+  const lines = String(message || '').replace(/\r\n/g, '\n').split('\n');
+  return lines
+    .map((line) => {
+      const trimmed = line.trim();
+      if (!trimmed) return '<br />';
+      return `<p style="margin:0 0 10px 0;color:#334155;line-height:1.6;">${escapeHtml(line)}</p>`;
+    })
+    .join('');
+};
+
+const buildInvoiceEmailHtml = ({ invoice, context, message, templateMeta }) => {
+  const colors = templateMeta?.colors || {};
+  const primary = resolveCssColor(colors.primary, '#2563eb');
+  const secondary = resolveCssColor(colors.secondary, '#3b82f6');
+  const accent = resolveCssColor(colors.accent, '#eff6ff');
+  const text = resolveCssColor(colors.text, '#1f2937');
+  const messageHtml = messageToHtml(message);
+  const templateName = templateMeta?.name || 'Standard';
+
+  return `
+    <div style="margin:0;padding:24px;background:#f8fafc;font-family:Arial,sans-serif;">
+      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="max-width:640px;margin:0 auto;background:#fff;border:1px solid #e2e8f0;border-radius:10px;overflow:hidden;">
+        <tr>
+          <td style="padding:20px;background:linear-gradient(90deg, ${primary} 0%, ${secondary} 100%);">
+            <div style="font-size:22px;font-weight:700;color:#fff;">${escapeHtml(context.businessName)}</div>
+            <div style="font-size:12px;color:#dbeafe;margin-top:6px;">Template: ${escapeHtml(templateName)}</div>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:20px;">
+            ${messageHtml}
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:0 20px 20px 20px;">
+            <div style="border:1px solid #dbeafe;background:${accent};border-radius:8px;padding:14px;">
+              <div style="font-size:13px;color:${text};margin-bottom:6px;"><strong>Invoice:</strong> ${escapeHtml(context.invoiceNumber)}</div>
+              <div style="font-size:13px;color:${text};margin-bottom:6px;"><strong>Invoice Date:</strong> ${escapeHtml(context.invoiceDate)}</div>
+              <div style="font-size:13px;color:${text};margin-bottom:6px;"><strong>Due Date:</strong> ${escapeHtml(context.dueDate)}</div>
+              <div style="font-size:13px;color:${text};"><strong>Amount Due:</strong> ${escapeHtml(context.totalAmount)} ${escapeHtml(context.currency)}</div>
+            </div>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:0 20px 24px 20px;">
+            <a href="${escapeHtml(context.payNowUrl)}" style="display:inline-block;padding:11px 18px;border-radius:8px;background:${primary};color:#fff;text-decoration:none;font-weight:600;">
+              View / Pay Invoice
+            </a>
+          </td>
+        </tr>
+      </table>
+    </div>
+  `;
+};
 
 const resolveOverrideInput = (payload = {}) => {
   const overrideRate = hasValue(payload.taxRateUsed)
@@ -272,6 +427,7 @@ exports.createInvoice = asyncHandler(async (req, res, next) => {
   req.body.business = req.user.business;
   req.body.createdBy = req.user.id;
   req.body.currency = currency;
+  req.body.templateStyle = resolveCanonicalTemplateStyle(req.body.templateStyle, 'standard');
 
   // Validate customer
   const customer = await Customer.findOne({
@@ -490,6 +646,15 @@ exports.updateInvoice = asyncHandler(async (req, res, next) => {
     );
   }
 
+  if (hasValue(req.body.templateStyle) || hasValue(req.body.templateId) || hasValue(req.body.template)) {
+    req.body.templateStyle = resolveCanonicalTemplateStyle(
+      req.body.templateStyle || req.body.templateId || req.body.template || invoice.templateStyle,
+      invoice.templateStyle || 'standard'
+    );
+  }
+  delete req.body.templateId;
+  delete req.body.template;
+
   // Handle inventory adjustments if items changed
   if (req.body.items) {
     // TODO: Implement inventory adjustment logic
@@ -696,31 +861,88 @@ exports.sendInvoice = asyncHandler(async (req, res, next) => {
     await invoice.save();
   }
 
-  // Generate PDF
-  const pdfBuffer = await generatePDF.invoice(invoice);
+  const rawRecipientEmail =
+    req.body?.customerEmail ||
+    req.body?.clientEmail ||
+    invoice.customer?.email ||
+    invoice.clientEmail;
+  const recipientEmail = String(rawRecipientEmail || '').trim().toLowerCase();
+  if (!recipientEmail) {
+    return next(new ErrorResponse('Customer email is required to send this invoice', 400));
+  }
+  const hasValidRecipientEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(recipientEmail);
+  if (!hasValidRecipientEmail) {
+    return next(new ErrorResponse(`Invalid customer email address: ${recipientEmail}`, 400));
+  }
 
-  const frontendBaseUrl =
-    process.env.APP_BASE_URL
-    || process.env.FRONTEND_URL
-    || process.env.REACT_APP_URL
-    || `${req.protocol}://${req.get('host')}`;
+  const resolvedTemplateStyle = resolveCanonicalTemplateStyle(
+    req.body?.templateStyle || req.body?.templateId || req.body?.template || invoice.templateStyle || 'standard',
+    invoice.templateStyle || 'standard'
+  );
+  const templateMeta = resolveInvoiceTemplateMeta(resolvedTemplateStyle);
+
+  const frontendBaseUrl = getConfiguredFrontendBaseUrl();
+  const backendBaseUrl = getBackendBaseUrl(req);
+  const payNowUrl = `${backendBaseUrl}/api/v1/invoices/public/${invoice.publicSlug}/pay`;
+  const invoiceUrl = frontendBaseUrl
+    ? `${frontendBaseUrl}/invoice/pay/${invoice.publicSlug}`
+    : payNowUrl;
+
+  const mailContext = {
+    customerName: invoice.customer?.name || 'Customer',
+    businessName: invoice.business?.name || 'Business',
+    invoiceNumber: invoice.invoiceNumber,
+    invoiceDate: formatDisplayDate(invoice.date),
+    dueDate: formatDisplayDate(invoice.dueDate),
+    totalAmount: Number(invoice.total || 0).toFixed(2),
+    currency: invoice.currency,
+    payNowUrl,
+    invoiceUrl
+  };
+
+  const defaultSubjectTemplate = `Invoice {{invoiceNumber}} from {{businessName}}`;
+  const defaultMessageTemplate = [
+    'Dear {{customerName}},',
+    '',
+    'Please find your invoice details below.',
+    '',
+    'Invoice Number: {{invoiceNumber}}',
+    'Invoice Date: {{invoiceDate}}',
+    'Due Date: {{dueDate}}',
+    'Amount Due: {{totalAmount}} {{currency}}',
+    '',
+    'You can view and pay your invoice here: {{payNowUrl}}',
+    '',
+    'Thank you for your business.',
+    '{{businessName}}'
+  ].join('\n');
+
+  const subjectTemplate = String(
+    req.body?.emailSubject || invoice.emailSubject || defaultSubjectTemplate
+  ).trim();
+  const messageTemplate = String(
+    req.body?.emailMessage || invoice.emailMessage || defaultMessageTemplate
+  ).trim();
+
+  const resolvedSubject = interpolateTemplateText(subjectTemplate, mailContext);
+  const resolvedMessage = interpolateTemplateText(messageTemplate, mailContext);
+
+  // Generate PDF with the same template selected for this send request
+  const pdfBuffer = await generatePDF.invoice(invoice, {
+    templateStyle: resolvedTemplateStyle
+  });
 
   // Send email
   await sendEmail({
-    to: invoice.customer.email,
-    subject: `Invoice ${invoice.invoiceNumber} from ${invoice.business.name}`,
-    template: 'invoice',
-    context: {
-      customerName: invoice.customer.name,
-      businessName: invoice.business.name,
-      invoiceNumber: invoice.invoiceNumber,
-      invoiceDate: invoice.date.toLocaleDateString(),
-      dueDate: invoice.dueDate.toLocaleDateString(),
-      totalAmount: invoice.total.toFixed(2),
-      currency: invoice.currency,
-      invoiceUrl: `${frontendBaseUrl}/invoices/view/${invoice._id}`,
-      payNowUrl: `${frontendBaseUrl}/invoice/pay/${invoice.publicSlug}`
-    },
+    to: recipientEmail,
+    subject: resolvedSubject,
+    text: resolvedMessage,
+    html: buildInvoiceEmailHtml({
+      invoice,
+      context: mailContext,
+      message: resolvedMessage,
+      templateMeta
+    }),
     attachments: [{
       filename: `invoice-${invoice.invoiceNumber}.pdf`,
       content: pdfBuffer,
@@ -729,6 +951,10 @@ exports.sendInvoice = asyncHandler(async (req, res, next) => {
   });
 
   // Update invoice status
+  invoice.clientEmail = recipientEmail;
+  invoice.templateStyle = resolvedTemplateStyle;
+  invoice.emailSubject = subjectTemplate;
+  invoice.emailMessage = messageTemplate;
   invoice.status = 'sent';
   invoice.sentDate = new Date();
   invoice.paymentLinkSentAt = new Date();
@@ -1025,12 +1251,12 @@ exports.sendReminder = asyncHandler(async (req, res, next) => {
     await invoice.save();
   }
 
-  const publicAppBaseUrl = (
-    process.env.APP_BASE_URL
-    || process.env.FRONTEND_URL
-    || process.env.REACT_APP_URL
-    || `${req.protocol}://${req.get('host')}`
-  ).replace(/\/+$/, '');
+  const frontendBaseUrl = getConfiguredFrontendBaseUrl();
+  const backendBaseUrl = getBackendBaseUrl(req);
+  const payNowUrl = `${backendBaseUrl}/api/v1/invoices/public/${invoice.publicSlug}/pay`;
+  const invoiceUrl = frontendBaseUrl
+    ? `${frontendBaseUrl}/invoice/pay/${invoice.publicSlug}`
+    : payNowUrl;
 
   // Send reminder email
   await sendEmail({
@@ -1048,8 +1274,8 @@ exports.sendReminder = asyncHandler(async (req, res, next) => {
       totalAmount: invoice.total.toFixed(2),
       currency: invoice.currency,
       lateFeeMessage,
-      invoiceUrl: `${publicAppBaseUrl}/invoice/pay/${invoice.publicSlug}`,
-      payNowUrl: `${publicAppBaseUrl}/invoice/pay/${invoice.publicSlug}`
+      invoiceUrl,
+      payNowUrl
     }
   });
 

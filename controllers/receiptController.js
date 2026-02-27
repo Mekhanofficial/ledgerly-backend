@@ -394,14 +394,23 @@ exports.emailReceipt = asyncHandler(async (req, res, next) => {
     return next(new ErrorResponse(`Receipt not found with id ${req.params.id}`, 404));
   }
   
-  if (!receipt.customer.email) {
-    return next(new ErrorResponse('Customer does not have an email address', 400));
+  const requestEmail = String(req.body?.customerEmail || '').trim().toLowerCase();
+  const storedCustomerEmail = String(receipt.customer?.email || '').trim().toLowerCase();
+  const recipientEmail = requestEmail || storedCustomerEmail;
+
+  if (!recipientEmail) {
+    return next(new ErrorResponse('Customer email is required to send this receipt', 400));
+  }
+
+  const hasValidRecipientEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(recipientEmail);
+  if (!hasValidRecipientEmail) {
+    return next(new ErrorResponse(`Invalid customer email address: ${recipientEmail}`, 400));
   }
   
   const pdfBuffer = await generatePDF.receipt(receipt);
   
   await sendEmail({
-    to: receipt.customer.email,
+    to: recipientEmail,
     subject: `Receipt ${receipt.receiptNumber} from ${receipt.business.name}`,
     template: 'receipt',
     context: {

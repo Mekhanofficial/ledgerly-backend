@@ -5,6 +5,7 @@ const asyncHandler = require('../utils/asyncHandler');
 const sendEmail = require('../utils/email');
 const crypto = require('crypto');
 const path = require('path');
+const { OTP_EXPIRY_MINUTES, sendVerificationOtpEmail } = require('../emailmicroservice');
 const { getDefaultPermissions } = require('../utils/rolePermissions');
 const {
   startTrialForUser,
@@ -13,12 +14,30 @@ const {
   syncBusinessFromUser
 } = require('../utils/subscriptionService');
 
+const normalizeEmail = (value) => String(value || '').trim().toLowerCase();
+
+const hashOtp = (value) =>
+  crypto
+    .createHash('sha256')
+    .update(String(value || '').trim())
+    .digest('hex');
+
+const issueAndSendEmailVerificationOtp = async (user) => {
+  const otp = user.generateEmailVerificationOtp();
+  await user.save({ validateBeforeSave: false });
+  await sendVerificationOtpEmail({
+    to: user.email,
+    name: user.name,
+    otp
+  });
+};
+
 // @desc    Register user
 // @route   POST /api/v1/auth/register
 // @access  Public
 exports.register = asyncHandler(async (req, res, next) => {
   const { name, email, password, phone, businessName, currency, currencyCode } = req.body;
-  const normalizedEmail = email ? String(email).trim().toLowerCase() : '';
+  const normalizedEmail = normalizeEmail(email);
 
   // Check if user exists
   const userExists = await User.findOne({ email: normalizedEmail });
@@ -55,28 +74,16 @@ exports.register = asyncHandler(async (req, res, next) => {
   // Start free trial for new accounts
   await startTrialForUser({ user, business });
 
-  // Generate verification token
-  const verificationToken = crypto.randomBytes(20).toString('hex');
-  user.verificationToken = crypto
-    .createHash('sha256')
-    .update(verificationToken)
-    .digest('hex');
-  await user.save();
+  await issueAndSendEmailVerificationOtp(user);
 
-  // Send verification email
-  const verificationUrl = `${req.protocol}://${req.get('host')}/api/v1/auth/confirmemail/${verificationToken}`;
-  
-  await sendEmail({
-    to: user.email,
-    subject: 'Email Verification - Ledgerly',
-    template: 'verification',
-    context: {
-      name: user.name,
-      verificationUrl
+  res.status(201).json({
+    success: true,
+    message: 'Account created. A verification code has been sent to your email.',
+    data: {
+      email: user.email,
+      expiresInMinutes: OTP_EXPIRY_MINUTES
     }
   });
-
-  sendTokenResponse(user, 201, res);
 });
 
 // @desc    Login user
@@ -84,7 +91,7 @@ exports.register = asyncHandler(async (req, res, next) => {
 // @access  Public
 exports.login = asyncHandler(async (req, res, next) => {
   const { email, password } = req.body;
-  const normalizedEmail = email ? String(email).trim().toLowerCase() : '';
+  const normalizedEmail = normalizeEmail(email);
 
   // Validate email & password
   if (!normalizedEmail || !password) {
@@ -103,6 +110,10 @@ exports.login = asyncHandler(async (req, res, next) => {
     return next(new ErrorResponse('Account is deactivated', 401));
   }
 
+  if (!user.emailVerified) {
+    return next(new ErrorResponse('Please verify your email with the OTP sent to your inbox', 403));
+  }
+
   // Check password
   const isMatch = await user.matchPassword(password);
   
@@ -115,6 +126,94 @@ exports.login = asyncHandler(async (req, res, next) => {
   await user.save();
 
   sendTokenResponse(user, 200, res);
+});
+
+// @desc    Verify email OTP
+// @route   POST /api/v1/auth/verify-email-otp
+// @access  Public
+exports.verifyEmailOtp = asyncHandler(async (req, res, next) => {
+  const normalizedEmail = normalizeEmail(req.body.email);
+  const otp = String(req.body.otp || '').trim();
+
+  if (!normalizedEmail || !otp) {
+    return next(new ErrorResponse('Email and OTP are required', 400));
+  }
+
+  const user = await User.findOne({ email: normalizedEmail }).select(
+    '+emailVerificationOtp +emailVerificationOtpExpire'
+  );
+
+  if (!user) {
+    return next(new ErrorResponse('There is no user with that email', 404));
+  }
+
+  if (user.emailVerified) {
+    return res.status(200).json({
+      success: true,
+      message: 'Email is already verified. You can log in.'
+    });
+  }
+
+  if (!user.emailVerificationOtp || !user.emailVerificationOtpExpire) {
+    return next(new ErrorResponse('No verification code found. Please request a new OTP.', 400));
+  }
+
+  if (new Date(user.emailVerificationOtpExpire).getTime() < Date.now()) {
+    user.emailVerificationOtp = undefined;
+    user.emailVerificationOtpExpire = undefined;
+    await user.save({ validateBeforeSave: false });
+    return next(new ErrorResponse('Verification code expired. Please request a new OTP.', 400));
+  }
+
+  if (hashOtp(otp) !== user.emailVerificationOtp) {
+    return next(new ErrorResponse('Invalid verification code', 400));
+  }
+
+  user.emailVerified = true;
+  user.verificationToken = undefined;
+  user.emailVerificationOtp = undefined;
+  user.emailVerificationOtpExpire = undefined;
+  await user.save({ validateBeforeSave: false });
+
+  res.status(200).json({
+    success: true,
+    message: 'Email verified successfully. You can now log in.'
+  });
+});
+
+// @desc    Resend email OTP
+// @route   POST /api/v1/auth/resend-email-otp
+// @access  Public
+exports.resendEmailOtp = asyncHandler(async (req, res, next) => {
+  const normalizedEmail = normalizeEmail(req.body.email);
+
+  if (!normalizedEmail) {
+    return next(new ErrorResponse('Email is required', 400));
+  }
+
+  const user = await User.findOne({ email: normalizedEmail });
+
+  if (!user) {
+    return next(new ErrorResponse('There is no user with that email', 404));
+  }
+
+  if (user.emailVerified) {
+    return res.status(200).json({
+      success: true,
+      message: 'Email is already verified.'
+    });
+  }
+
+  await issueAndSendEmailVerificationOtp(user);
+
+  res.status(200).json({
+    success: true,
+    message: 'A new verification code has been sent to your email.',
+    data: {
+      email: user.email,
+      expiresInMinutes: OTP_EXPIRY_MINUTES
+    }
+  });
 });
 
 // @desc    Logout user
@@ -200,7 +299,7 @@ exports.updatePassword = asyncHandler(async (req, res, next) => {
 // @route   POST /api/v1/auth/forgotpassword
 // @access  Public
 exports.forgotPassword = asyncHandler(async (req, res, next) => {
-  const user = await User.findOne({ email: req.body.email });
+  const user = await User.findOne({ email: normalizeEmail(req.body.email) });
 
   if (!user) {
     return next(new ErrorResponse('There is no user with that email', 404));
@@ -281,6 +380,8 @@ exports.confirmEmail = asyncHandler(async (req, res, next) => {
 
   user.emailVerified = true;
   user.verificationToken = undefined;
+  user.emailVerificationOtp = undefined;
+  user.emailVerificationOtpExpire = undefined;
   await user.save();
 
   res.status(200).json({
@@ -315,6 +416,7 @@ const sendTokenResponse = (user, statusCode, res) => {
       id: user._id,
       name: user.name,
       email: user.email,
+      emailVerified: user.emailVerified,
       phone: user.phone,
       role: user.role,
       business: user.business,

@@ -1,4 +1,7 @@
-const transporter = require('./mailer');
+const { getTransporter } = require('./mailer');
+const { getEmailConfig } = require('../config/email');
+
+const emailConfig = getEmailConfig();
 
 // Email templates
 const templates = {
@@ -154,12 +157,7 @@ const templates = {
 // Send email function
 const sendEmail = async (options) => {
   const message = {
-    from:
-      process.env.MAIL_FROM
-      || process.env.EMAIL_FROM
-      || process.env.MAIL_USER
-      || process.env.EMAIL_USER
-      || 'Ledgerly <no-reply@ledgerly.com>',
+    from: emailConfig.from,
     to: options.to,
     subject: options.subject,
     text: options.text || options.subject,
@@ -195,13 +193,21 @@ const sendEmail = async (options) => {
     message.attachments = options.attachments;
   }
 
+  const transporter = getTransporter();
   if (!transporter) {
-    console.warn('Skipping email send because transporter is not configured. Message details:', message);
-    return null;
+    throw new Error(
+      'Email service is not configured. Set MAIL_HOST/MAIL_USER/MAIL_PASS (or EMAIL_*/SMTP_* equivalents).'
+    );
   }
 
   try {
     const info = await transporter.sendMail(message);
+    if (Array.isArray(info?.rejected) && info.rejected.length > 0) {
+      throw new Error(`Email rejected for recipient(s): ${info.rejected.join(', ')}`);
+    }
+    if (Array.isArray(info?.accepted) && info.accepted.length === 0) {
+      throw new Error('Email was not accepted by SMTP provider');
+    }
     console.log('Email sent:', info.messageId);
     return info;
   } catch (error) {

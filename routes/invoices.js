@@ -20,7 +20,8 @@ const {
 } = require('../controllers/invoiceController');
 const {
   getPublicInvoice,
-  initializePublicInvoicePaystackPayment
+  initializePublicInvoicePaystackPayment,
+  redirectPublicInvoicePaymentPortal
 } = require('../controllers/invoicePaymentController');
 const { protect, authorize } = require('../middleware/auth');
 const {
@@ -31,6 +32,7 @@ const {
 
 // Public invoice view (for customers)
 router.get('/public/:slug', getPublicInvoice);
+router.get('/public/:slug/pay', redirectPublicInvoicePaymentPortal);
 router.post('/public/:slug/paystack/initialize', initializePublicInvoicePaystackPayment);
 
 // All remaining routes are protected

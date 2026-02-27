@@ -3,6 +3,7 @@ const router = express.Router();
 const {
   getTemplates,
   createCustomTemplate,
+  updateTemplateEmailContent,
   purchaseTemplate,
   purchaseTemplateBundle,
   getTemplatePurchases
@@ -21,6 +22,12 @@ router.post(
   '/custom',
   authorize('admin', 'accountant'),
   createCustomTemplate
+);
+
+router.put(
+  '/:id/email-content',
+  authorize('admin', 'accountant'),
+  updateTemplateEmailContent
 );
 
 router.get(
