@@ -39,12 +39,14 @@ const getEmailConfig = () => {
   const host = firstNonEmpty(
     process.env.MAIL_HOST,
     process.env.EMAIL_HOST,
-    process.env.SMTP_HOST
+    process.env.SMTP_HOST,
+    process.env.MAILER_HOST
   );
   const service = firstNonEmpty(
     process.env.MAIL_SERVICE,
     process.env.EMAIL_SERVICE,
-    process.env.SMTP_SERVICE
+    process.env.SMTP_SERVICE,
+    process.env.MAILER_SERVICE
   );
   const user = firstNonEmpty(
     process.env.MAIL_USER,
@@ -53,7 +55,10 @@ const getEmailConfig = () => {
     process.env.EMAIL_USERNAME,
     process.env.SMTP_USER,
     process.env.SMTP_USERNAME,
-    process.env.GMAIL_USER
+    process.env.GMAIL_USER,
+    process.env.MAILER_USER,
+    process.env.MAILER_EMAIL,
+    process.env.SMTP_LOGIN
   );
   const pass = firstNonEmpty(
     process.env.MAIL_PASS,
@@ -62,29 +67,48 @@ const getEmailConfig = () => {
     process.env.EMAIL_PASSWORD,
     process.env.SMTP_PASS,
     process.env.SMTP_PASSWORD,
-    process.env.GMAIL_APP_PASSWORD
+    process.env.GMAIL_APP_PASSWORD,
+    process.env.MAILER_PASS,
+    process.env.MAILER_PASSWORD,
+    process.env.SMTP_KEY
   );
   const port = parsePort(
-    firstNonEmpty(process.env.MAIL_PORT, process.env.EMAIL_PORT, process.env.SMTP_PORT),
+    firstNonEmpty(
+      process.env.MAIL_PORT,
+      process.env.EMAIL_PORT,
+      process.env.SMTP_PORT,
+      process.env.MAILER_PORT
+    ),
     587
   );
-  const secure = resolveSecureFlag(process.env.MAIL_SECURE || process.env.EMAIL_SECURE, port);
+  const secure = resolveSecureFlag(
+    firstNonEmpty(
+      process.env.MAIL_SECURE,
+      process.env.EMAIL_SECURE,
+      process.env.SMTP_SECURE,
+      process.env.MAILER_SECURE
+    ),
+    port
+  );
   const from = firstNonEmpty(
     process.env.MAIL_FROM,
     process.env.EMAIL_FROM,
     process.env.SMTP_FROM,
+    process.env.MAILER_FROM,
+    process.env.FROM_EMAIL,
     user
   ) ||
     'Ledgerly <no-reply@ledgerly.com>';
 
-  const gmailMode = isGmailTransport({ host, service, user });
+  const inferredService = service || (!host && String(user || '').toLowerCase().endsWith('@gmail.com') ? 'gmail' : '');
+  const gmailMode = isGmailTransport({ host, service: inferredService, user });
   const fromEmail = extractEmailAddress(from);
   const userEmail = extractEmailAddress(user);
   const normalizedFrom = gmailMode && userEmail && fromEmail && fromEmail !== userEmail
     ? `Ledgerly <${userEmail}>`
     : from;
 
-  return { host, service, port, secure, user, pass, from: normalizedFrom };
+  return { host, service: inferredService, port, secure, user, pass, from: normalizedFrom };
 };
 
 const isEmailConfigured = () => {

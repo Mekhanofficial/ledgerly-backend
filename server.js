@@ -8,6 +8,7 @@ const hpp = require('hpp');
 const rateLimit = require('express-rate-limit');
 const connectDB = require('./config/db');
 const { resetMonthlyInvoiceCounts } = require('./utils/subscriptionService');
+const { getEmailConfig, isEmailConfigured } = require('./config/email');
 
 // Load env vars
 dotenv.config();
@@ -161,9 +162,27 @@ app.use('*', (req, res) => {
 });
 
 const PORT = process.env.PORT || 7000;
+const maskEmail = (value) => {
+  const email = String(value || '').trim();
+  if (!email.includes('@')) return email ? '***' : '';
+  const [name, domain] = email.split('@');
+  if (!name) return `***@${domain}`;
+  const visible = name.slice(0, 2);
+  return `${visible}***@${domain}`;
+};
 
 const server = app.listen(PORT, () => {
   console.log(`Server running in ${process.env.NODE_ENV} mode on port ${PORT}`);
+  const emailConfig = getEmailConfig();
+  console.log('Email transport status:', {
+    configured: isEmailConfigured(),
+    host: emailConfig.host || '',
+    service: emailConfig.service || '',
+    port: emailConfig.port,
+    secure: emailConfig.secure,
+    user: maskEmail(emailConfig.user),
+    from: emailConfig.from
+  });
 });
 
 // Monthly invoice count reset (runs daily)

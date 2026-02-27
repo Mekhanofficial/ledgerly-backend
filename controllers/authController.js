@@ -42,7 +42,32 @@ exports.register = asyncHandler(async (req, res, next) => {
   // Check if user exists
   const userExists = await User.findOne({ email: normalizedEmail });
   if (userExists) {
-    return next(new ErrorResponse('User already exists', 400));
+    if (userExists.emailVerified) {
+      return next(new ErrorResponse('User already exists', 400));
+    }
+
+    let otpSent = true;
+    let otpErrorMessage = '';
+    try {
+      await issueAndSendEmailVerificationOtp(userExists);
+    } catch (otpError) {
+      otpSent = false;
+      otpErrorMessage = otpError?.message || 'Unable to send verification code';
+      console.error('Failed to resend registration OTP for existing unverified user:', otpErrorMessage);
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: otpSent
+        ? 'Account already exists but is not verified. A new verification code has been sent to your email.'
+        : 'Account already exists but is not verified. We could not send verification code right now. Please try resend OTP.',
+      data: {
+        email: userExists.email,
+        expiresInMinutes: OTP_EXPIRY_MINUTES,
+        otpSent,
+        otpError: otpSent ? undefined : otpErrorMessage
+      }
+    });
   }
 
   // Create business
@@ -74,14 +99,27 @@ exports.register = asyncHandler(async (req, res, next) => {
   // Start free trial for new accounts
   await startTrialForUser({ user, business });
 
-  await issueAndSendEmailVerificationOtp(user);
+  let otpSent = true;
+  let otpErrorMessage = '';
+
+  try {
+    await issueAndSendEmailVerificationOtp(user);
+  } catch (otpError) {
+    otpSent = false;
+    otpErrorMessage = otpError?.message || 'Unable to send verification code';
+    console.error('Failed to send registration OTP:', otpErrorMessage);
+  }
 
   res.status(201).json({
     success: true,
-    message: 'Account created. A verification code has been sent to your email.',
+    message: otpSent
+      ? 'Account created. A verification code has been sent to your email.'
+      : 'Account created, but we could not send verification code right now. Please use resend OTP.',
     data: {
       email: user.email,
-      expiresInMinutes: OTP_EXPIRY_MINUTES
+      expiresInMinutes: OTP_EXPIRY_MINUTES,
+      otpSent,
+      otpError: otpSent ? undefined : otpErrorMessage
     }
   });
 });

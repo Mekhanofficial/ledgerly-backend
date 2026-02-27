@@ -6,7 +6,9 @@ const OTP_EXPIRY_MINUTES = 10;
 
 const sendVerificationOtpEmail = async ({ to, name, otp }) => {
   if (!isEmailConfigured()) {
-    throw new Error('Email service is not configured. Set EMAIL_HOST, EMAIL_USER and EMAIL_PASS in .env.');
+    throw new Error(
+      'Email service is not configured. Set MAIL_*/EMAIL_*/SMTP_* credentials (host/service + user + pass).'
+    );
   }
 
   const message = buildVerificationOtpEmail({
