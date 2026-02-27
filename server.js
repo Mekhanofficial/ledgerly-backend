@@ -142,10 +142,16 @@ app.use('/api/v1/webhooks', webhooks);
 
 // Health check
 app.get('/health', (req, res) => {
+  const commit = process.env.RENDER_GIT_COMMIT
+    || process.env.GIT_COMMIT
+    || process.env.COMMIT_SHA
+    || '';
+
   res.status(200).json({
     success: true,
     message: 'Ledgerly API is running',
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
+    version: commit ? commit.slice(0, 12) : 'unknown'
   });
 });
 
@@ -173,6 +179,11 @@ const maskEmail = (value) => {
 
 const server = app.listen(PORT, () => {
   console.log(`Server running in ${process.env.NODE_ENV} mode on port ${PORT}`);
+  const commit = process.env.RENDER_GIT_COMMIT
+    || process.env.GIT_COMMIT
+    || process.env.COMMIT_SHA
+    || '';
+  console.log('Deployment version:', commit ? commit.slice(0, 12) : 'unknown');
   const emailConfig = getEmailConfig();
   console.log('Email transport status:', {
     configured: isEmailConfigured(),

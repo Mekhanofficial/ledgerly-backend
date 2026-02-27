@@ -20,6 +20,25 @@ const parsePositiveInt = (value, fallback) => {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 };
 const OTP_SEND_TIMEOUT_MS = parsePositiveInt(process.env.OTP_SEND_TIMEOUT_MS, 7000);
+const OTP_SAVE_TIMEOUT_MS = parsePositiveInt(process.env.OTP_SAVE_TIMEOUT_MS, 7000);
+const TRIAL_SETUP_TIMEOUT_MS = parsePositiveInt(process.env.TRIAL_SETUP_TIMEOUT_MS, 8000);
+
+const runWithTimeout = async (task, timeoutMs, timeoutMessage) => {
+  const promise = Promise.resolve(task);
+  // Prevent unhandled rejection if timeout wins the race.
+  promise.catch(() => {});
+  let timeoutId;
+  const timeoutPromise = new Promise((_, reject) => {
+    timeoutId = setTimeout(() => {
+      reject(new Error(timeoutMessage));
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    clearTimeout(timeoutId);
+  }
+};
 
 const hashOtp = (value) =>
   crypto
@@ -29,25 +48,21 @@ const hashOtp = (value) =>
 
 const issueAndSendEmailVerificationOtp = async (user) => {
   const otp = user.generateEmailVerificationOtp();
-  await user.save({ validateBeforeSave: false });
+  await runWithTimeout(
+    user.save({ validateBeforeSave: false }),
+    OTP_SAVE_TIMEOUT_MS,
+    `OTP persistence timed out after ${OTP_SAVE_TIMEOUT_MS}ms`
+  );
   const sendTask = sendVerificationOtpEmail({
     to: user.email,
     name: user.name,
     otp
   });
-  // Avoid blocking auth routes for long SMTP timeouts.
-  sendTask.catch(() => {});
-  let timeoutId;
-  const timeoutTask = new Promise((_, reject) => {
-    timeoutId = setTimeout(() => {
-      reject(new Error(`OTP email send timed out after ${OTP_SEND_TIMEOUT_MS}ms`));
-    }, OTP_SEND_TIMEOUT_MS);
-  });
-  try {
-    await Promise.race([sendTask, timeoutTask]);
-  } finally {
-    clearTimeout(timeoutId);
-  }
+  await runWithTimeout(
+    sendTask,
+    OTP_SEND_TIMEOUT_MS,
+    `OTP email send timed out after ${OTP_SEND_TIMEOUT_MS}ms`
+  );
 };
 
 // @desc    Register user
@@ -114,8 +129,16 @@ exports.register = asyncHandler(async (req, res, next) => {
   business.owner = user._id;
   await business.save();
 
-  // Start free trial for new accounts
-  await startTrialForUser({ user, business });
+  // Start free trial for new accounts without blocking registration indefinitely.
+  try {
+    await runWithTimeout(
+      startTrialForUser({ user, business }),
+      TRIAL_SETUP_TIMEOUT_MS,
+      `Trial setup timed out after ${TRIAL_SETUP_TIMEOUT_MS}ms`
+    );
+  } catch (trialError) {
+    console.error('Trial setup failed during registration:', trialError?.message || trialError);
+  }
 
   let otpSent = true;
   let otpErrorMessage = '';
