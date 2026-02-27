@@ -180,6 +180,9 @@ const server = app.listen(PORT, () => {
     service: emailConfig.service || '',
     port: emailConfig.port,
     secure: emailConfig.secure,
+    connectionTimeout: emailConfig.connectionTimeout,
+    greetingTimeout: emailConfig.greetingTimeout,
+    socketTimeout: emailConfig.socketTimeout,
     user: maskEmail(emailConfig.user),
     from: emailConfig.from
   });

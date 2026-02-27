@@ -15,6 +15,11 @@ const {
 } = require('../utils/subscriptionService');
 
 const normalizeEmail = (value) => String(value || '').trim().toLowerCase();
+const parsePositiveInt = (value, fallback) => {
+  const parsed = Number.parseInt(String(value ?? ''), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+};
+const OTP_SEND_TIMEOUT_MS = parsePositiveInt(process.env.OTP_SEND_TIMEOUT_MS, 7000);
 
 const hashOtp = (value) =>
   crypto
@@ -25,11 +30,24 @@ const hashOtp = (value) =>
 const issueAndSendEmailVerificationOtp = async (user) => {
   const otp = user.generateEmailVerificationOtp();
   await user.save({ validateBeforeSave: false });
-  await sendVerificationOtpEmail({
+  const sendTask = sendVerificationOtpEmail({
     to: user.email,
     name: user.name,
     otp
   });
+  // Avoid blocking auth routes for long SMTP timeouts.
+  sendTask.catch(() => {});
+  let timeoutId;
+  const timeoutTask = new Promise((_, reject) => {
+    timeoutId = setTimeout(() => {
+      reject(new Error(`OTP email send timed out after ${OTP_SEND_TIMEOUT_MS}ms`));
+    }, OTP_SEND_TIMEOUT_MS);
+  });
+  try {
+    await Promise.race([sendTask, timeoutTask]);
+  } finally {
+    clearTimeout(timeoutId);
+  }
 };
 
 // @desc    Register user
@@ -242,14 +260,26 @@ exports.resendEmailOtp = asyncHandler(async (req, res, next) => {
     });
   }
 
-  await issueAndSendEmailVerificationOtp(user);
+  let otpSent = true;
+  let otpErrorMessage = '';
+  try {
+    await issueAndSendEmailVerificationOtp(user);
+  } catch (otpError) {
+    otpSent = false;
+    otpErrorMessage = otpError?.message || 'Unable to send verification code';
+    console.error('Failed to resend verification OTP:', otpErrorMessage);
+  }
 
   res.status(200).json({
     success: true,
-    message: 'A new verification code has been sent to your email.',
+    message: otpSent
+      ? 'A new verification code has been sent to your email.'
+      : 'We could not send verification code right now. Please try again shortly.',
     data: {
       email: user.email,
-      expiresInMinutes: OTP_EXPIRY_MINUTES
+      expiresInMinutes: OTP_EXPIRY_MINUTES,
+      otpSent,
+      otpError: otpSent ? undefined : otpErrorMessage
     }
   });
 });

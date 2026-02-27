@@ -3,6 +3,11 @@ const parsePort = (value, fallback) => {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 };
 
+const parsePositiveInt = (value, fallback) => {
+  const parsed = Number.parseInt(String(value ?? ''), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+};
+
 const firstNonEmpty = (...values) => {
   for (const value of values) {
     if (value === undefined || value === null) continue;
@@ -90,6 +95,42 @@ const getEmailConfig = () => {
     ),
     port
   );
+  const connectionTimeout = parsePositiveInt(
+    firstNonEmpty(
+      process.env.MAIL_CONNECTION_TIMEOUT,
+      process.env.EMAIL_CONNECTION_TIMEOUT,
+      process.env.SMTP_CONNECTION_TIMEOUT,
+      process.env.MAILER_CONNECTION_TIMEOUT,
+      process.env.MAIL_TIMEOUT,
+      process.env.EMAIL_TIMEOUT,
+      process.env.SMTP_TIMEOUT
+    ),
+    8000
+  );
+  const greetingTimeout = parsePositiveInt(
+    firstNonEmpty(
+      process.env.MAIL_GREETING_TIMEOUT,
+      process.env.EMAIL_GREETING_TIMEOUT,
+      process.env.SMTP_GREETING_TIMEOUT,
+      process.env.MAILER_GREETING_TIMEOUT,
+      process.env.MAIL_TIMEOUT,
+      process.env.EMAIL_TIMEOUT,
+      process.env.SMTP_TIMEOUT
+    ),
+    8000
+  );
+  const socketTimeout = parsePositiveInt(
+    firstNonEmpty(
+      process.env.MAIL_SOCKET_TIMEOUT,
+      process.env.EMAIL_SOCKET_TIMEOUT,
+      process.env.SMTP_SOCKET_TIMEOUT,
+      process.env.MAILER_SOCKET_TIMEOUT,
+      process.env.MAIL_TIMEOUT,
+      process.env.EMAIL_TIMEOUT,
+      process.env.SMTP_TIMEOUT
+    ),
+    12000
+  );
   const from = firstNonEmpty(
     process.env.MAIL_FROM,
     process.env.EMAIL_FROM,
@@ -108,7 +149,18 @@ const getEmailConfig = () => {
     ? `Ledgerly <${userEmail}>`
     : from;
 
-  return { host, service: inferredService, port, secure, user, pass, from: normalizedFrom };
+  return {
+    host,
+    service: inferredService,
+    port,
+    secure,
+    user,
+    pass,
+    from: normalizedFrom,
+    connectionTimeout,
+    greetingTimeout,
+    socketTimeout
+  };
 };
 
 const isEmailConfigured = () => {
@@ -123,14 +175,23 @@ const getMailerTransportConfig = () => {
   }
 
   const transport = {
-    host: config.host,
-    port: config.port,
     secure: config.secure,
     auth: {
       user: config.user,
       pass: config.pass
-    }
+    },
+    connectionTimeout: config.connectionTimeout,
+    greetingTimeout: config.greetingTimeout,
+    socketTimeout: config.socketTimeout
   };
+
+  if (config.host) {
+    transport.host = config.host;
+  }
+
+  if (config.port) {
+    transport.port = config.port;
+  }
 
   if (config.service) {
     transport.service = config.service;
