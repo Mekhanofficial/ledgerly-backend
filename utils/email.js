@@ -308,8 +308,6 @@ const buildGmailFallbackTransports = (defaultEmailConfig = {}) => {
   const connectionTimeout = toPositiveInt(defaultEmailConfig.connectionTimeout, 20000);
   const greetingTimeout = toPositiveInt(defaultEmailConfig.greetingTimeout, 20000);
   const socketTimeout = toPositiveInt(defaultEmailConfig.socketTimeout, 25000);
-  const currentPort = toPositiveInt(defaultEmailConfig.port, 587);
-  const currentSecure = Boolean(defaultEmailConfig.secure);
 
   const baseTransport = {
     host: 'smtp.gmail.com',
@@ -335,9 +333,7 @@ const buildGmailFallbackTransports = (defaultEmailConfig = {}) => {
     }
   ];
 
-  return candidates.filter(
-    (candidate) => !(candidate.port === currentPort && candidate.secure === currentSecure)
-  );
+  return candidates;
 };
 
 const tryAlternativeDefaultTransport = async ({ defaultEmailConfig, message }) => {
