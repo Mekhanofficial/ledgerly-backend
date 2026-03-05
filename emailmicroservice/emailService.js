@@ -5,9 +5,13 @@ const { buildVerificationOtpEmail } = require('./templates/verificationOtpTempla
 const OTP_EXPIRY_MINUTES = 10;
 
 const sendVerificationOtpEmail = async ({ to, name, otp }) => {
-  if (!isEmailConfigured()) {
+  const hasBrevoApiKey = Boolean(
+    String(process.env.BREVO_API_KEY || process.env.SENDINBLUE_API_KEY || '').trim()
+  );
+  const hasResendApiKey = Boolean(String(process.env.RESEND_API_KEY || '').trim());
+  if (!isEmailConfigured() && !hasBrevoApiKey && !hasResendApiKey) {
     throw new Error(
-      'Email service is not configured. Set MAIL_*/EMAIL_*/SMTP_* credentials (host/service + user + pass).'
+      'Email service is not configured. Set BREVO_API_KEY or RESEND_API_KEY (recommended on Render Free), or MAIL_*/EMAIL_*/SMTP_* credentials.'
     );
   }
 

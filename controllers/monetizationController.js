@@ -36,8 +36,23 @@ const toMinorUnits = (amount) => Math.round(Number(amount) * 100);
 
 const resolveTemplateById = (templateId) => templateCatalog.find((item) => item.id === templateId);
 
-const getCallbackUrl = (req) =>
-  `${process.env.FRONTEND_URL || process.env.REACT_APP_URL || `${req.protocol}://${req.get('host')}`}/payments/callback`;
+const trimTrailingSlashes = (value) => String(value || '').trim().replace(/\/+$/, '');
+
+const getConfiguredFrontendBaseUrl = () =>
+  trimTrailingSlashes(
+    process.env.APP_BASE_URL
+    || process.env.FRONTEND_URL
+    || process.env.REACT_APP_URL
+    || ''
+  );
+
+const getBackendBaseUrl = (req) => {
+  const forwardedProto = req.headers['x-forwarded-proto'];
+  const protocol = String(forwardedProto || req.protocol || 'http').split(',')[0].trim();
+  return `${protocol}://${req.get('host')}`;
+};
+
+const getCallbackUrl = (req) => `${getBackendBaseUrl(req)}/api/v1/payments/callback`;
 
 const ensureBillingOwner = async (req) => {
   if (req.billingOwner) return req.billingOwner;
@@ -157,6 +172,29 @@ const applyPaystackMetadata = async (payload, req) => {
 
   return { type: 'unknown' };
 };
+
+// @desc    Paystack callback bridge to frontend route
+// @route   GET /api/v1/payments/callback
+// @access  Public
+exports.paymentCallbackBridge = asyncHandler(async (req, res, next) => {
+  const frontendBaseUrl = getConfiguredFrontendBaseUrl();
+  if (!frontendBaseUrl) {
+    return next(
+      new ErrorResponse(
+        'FRONTEND_URL/APP_BASE_URL is not configured for payment callback redirects',
+        500
+      )
+    );
+  }
+
+  const redirectUrl = new URL('/payments/callback', `${frontendBaseUrl}/`);
+  Object.entries(req.query || {}).forEach(([key, value]) => {
+    if (value === undefined || value === null) return;
+    redirectUrl.searchParams.set(key, String(value));
+  });
+
+  res.redirect(302, redirectUrl.toString());
+});
 
 // @desc    Initialize subscription payment
 // @route   POST /api/v1/payments/initialize-subscription

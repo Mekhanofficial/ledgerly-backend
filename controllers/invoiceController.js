@@ -140,7 +140,7 @@ const toSafeEmailErrorMessage = (error) => {
     return 'SMTP authentication failed. Verify provider username/password and security settings.';
   }
   if (/econn|enotfound|etimedout|timeout|connection/i.test(raw)) {
-    return 'Could not connect to SMTP server. Verify host, port, and secure settings.';
+    return 'Could not connect to SMTP server. On Render Free, SMTP ports are blocked. Use BREVO_API_KEY/RESEND_API_KEY or upgrade to a paid instance for SMTP.';
   }
   return raw;
 };

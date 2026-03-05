@@ -191,8 +191,15 @@ const server = app.listen(PORT, () => {
     || '';
   console.log('Deployment version:', commit ? commit.slice(0, 12) : 'unknown');
   const emailConfig = getEmailConfig();
+  const brevoConfigured = Boolean(
+    String(process.env.BREVO_API_KEY || process.env.SENDINBLUE_API_KEY || '').trim()
+  );
+  const resendConfigured = Boolean(String(process.env.RESEND_API_KEY || '').trim());
   console.log('Email transport status:', {
     configured: isEmailConfigured(),
+    brevoConfigured,
+    resendConfigured,
+    deliveryConfigured: isEmailConfigured() || brevoConfigured || resendConfigured,
     host: emailConfig.host || '',
     service: emailConfig.service || '',
     port: emailConfig.port,

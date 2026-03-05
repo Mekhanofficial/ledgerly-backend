@@ -1,4 +1,5 @@
 const nodemailer = require('nodemailer');
+const axios = require('axios');
 const Settings = require('../models/Settings');
 const { getTransporter } = require('./mailer');
 const { getEmailConfig } = require('../config/email');
@@ -36,6 +37,294 @@ const toBoolean = (value, fallback = false) => {
   if (value === 'true') return true;
   if (value === 'false') return false;
   return fallback;
+};
+
+const toRecipientList = (value) => {
+  if (Array.isArray(value)) {
+    return value
+      .map((entry) => sanitizeText(entry))
+      .filter(Boolean);
+  }
+  const normalized = sanitizeText(value);
+  if (!normalized) return [];
+  return normalized
+    .split(',')
+    .map((entry) => sanitizeText(entry))
+    .filter(Boolean);
+};
+
+const uniqueNonEmpty = (values) => {
+  const output = [];
+  const seen = new Set();
+  values.forEach((value) => {
+    const normalized = sanitizeText(value);
+    if (!normalized) return;
+    const key = normalized.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    output.push(normalized);
+  });
+  return output;
+};
+
+const toBase64Content = (value) => {
+  if (Buffer.isBuffer(value)) {
+    return value.toString('base64');
+  }
+  if (value === undefined || value === null) {
+    return '';
+  }
+  return Buffer.from(String(value), 'utf8').toString('base64');
+};
+
+const resolvePreferredProvider = () =>
+  sanitizeText(process.env.EMAIL_DELIVERY_PROVIDER || process.env.EMAIL_PROVIDER).toLowerCase();
+
+const getResendConfig = (defaultFrom = '') => {
+  const apiKey = sanitizeText(process.env.RESEND_API_KEY);
+  if (!apiKey) {
+    return null;
+  }
+  return {
+    apiKey,
+    apiBaseUrl: sanitizeText(process.env.RESEND_API_BASE_URL) || 'https://api.resend.com',
+    from: sanitizeText(process.env.RESEND_FROM) || sanitizeText(defaultFrom)
+  };
+};
+
+const parseSenderAddress = (value, fallbackName = 'Ledgerly') => {
+  const normalized = sanitizeText(value);
+  if (!normalized) {
+    return {
+      email: '',
+      name: fallbackName
+    };
+  }
+
+  const match = normalized.match(/^(.*)<([^>]+)>$/);
+  if (match) {
+    const name = sanitizeText(match[1]) || fallbackName;
+    const email = sanitizeText(match[2]).toLowerCase();
+    return { name, email };
+  }
+
+  return {
+    email: normalized.toLowerCase(),
+    name: fallbackName
+  };
+};
+
+const getBrevoConfig = (defaultFrom = '') => {
+  const apiKey = sanitizeText(process.env.BREVO_API_KEY || process.env.SENDINBLUE_API_KEY);
+  if (!apiKey) {
+    return null;
+  }
+
+  const configuredSender = sanitizeText(
+    process.env.BREVO_FROM
+    || process.env.BREVO_SENDER
+    || process.env.BREVO_SENDER_EMAIL
+    || defaultFrom
+  );
+  const sender = parseSenderAddress(configuredSender, sanitizeText(process.env.BREVO_SENDER_NAME) || 'Ledgerly');
+
+  if (!sender.email) {
+    return null;
+  }
+
+  return {
+    apiKey,
+    apiBaseUrl: sanitizeText(process.env.BREVO_API_BASE_URL) || 'https://api.brevo.com/v3',
+    sender
+  };
+};
+
+const buildResendAttachments = (attachments = []) =>
+  (Array.isArray(attachments) ? attachments : [])
+    .map((attachment) => {
+      const filename = sanitizeText(attachment?.filename || attachment?.name);
+      const content = toBase64Content(attachment?.content);
+      if (!filename || !content) {
+        return null;
+      }
+      const mapped = {
+        filename,
+        content
+      };
+      const contentType = sanitizeText(attachment?.contentType || attachment?.type);
+      if (contentType) {
+        mapped.content_type = contentType;
+      }
+      return mapped;
+    })
+    .filter(Boolean);
+
+const buildBrevoAttachments = (attachments = []) =>
+  (Array.isArray(attachments) ? attachments : [])
+    .map((attachment) => {
+      const name = sanitizeText(attachment?.filename || attachment?.name);
+      const content = toBase64Content(attachment?.content);
+      if (!name || !content) {
+        return null;
+      }
+      return {
+        name,
+        content
+      };
+    })
+    .filter(Boolean);
+
+const parseHttpErrorMessage = (error, fallback) => {
+  const responseData = error?.response?.data;
+  const responseMessage =
+    typeof responseData === 'string'
+      ? responseData
+      : responseData?.message || responseData?.error || responseData?.details;
+  const status = error?.response?.status;
+  const detail = responseMessage || error?.message || fallback;
+  return status ? `${detail} (status ${status})` : detail;
+};
+
+const sendViaResend = async ({ resendConfig, message, defaultFrom }) => {
+  const to = toRecipientList(message?.to);
+  if (!to.length) {
+    throw new Error('No recipient email address provided');
+  }
+
+  const senderCandidates = uniqueNonEmpty([
+    message?.from,
+    resendConfig?.from,
+    defaultFrom
+  ]);
+  if (!senderCandidates.length) {
+    throw new Error('No sender email configured for Resend delivery');
+  }
+
+  const payloadBase = {
+    to,
+    subject: sanitizeText(message?.subject) || 'Ledgerly notification',
+    html: sanitizeText(message?.html),
+    text: sanitizeText(message?.text),
+    attachments: buildResendAttachments(message?.attachments)
+  };
+
+  if (!payloadBase.html && !payloadBase.text) {
+    payloadBase.text = payloadBase.subject;
+  }
+
+  const timeout = toPositiveInt(process.env.RESEND_TIMEOUT_MS, 30000);
+  let lastError = null;
+
+  for (const from of senderCandidates) {
+    try {
+      const payload = {
+        ...payloadBase,
+        from
+      };
+      const response = await axios.post(
+        `${resendConfig.apiBaseUrl.replace(/\/+$/, '')}/emails`,
+        payload,
+        {
+          headers: {
+            Authorization: `Bearer ${resendConfig.apiKey}`,
+            'Content-Type': 'application/json'
+          },
+          timeout
+        }
+      );
+
+      const messageId = response?.data?.id || response?.headers?.['x-request-id'] || '';
+      console.log('Email sent (Resend API):', messageId || '(no id)');
+      return {
+        messageId,
+        accepted: to,
+        rejected: []
+      };
+    } catch (error) {
+      lastError = new Error(parseHttpErrorMessage(error, 'Resend API request failed'));
+      const looksLikeSenderIssue = /from|sender|domain|verify|not allowed|forbidden/i.test(
+        String(lastError.message || '')
+      );
+      if (!looksLikeSenderIssue) {
+        break;
+      }
+    }
+  }
+
+  throw lastError || new Error('Resend API request failed');
+};
+
+const sendViaBrevo = async ({ brevoConfig, message, defaultFrom }) => {
+  const recipients = toRecipientList(message?.to).map((email) => ({ email }));
+  if (!recipients.length) {
+    throw new Error('No recipient email address provided');
+  }
+
+  const senderCandidates = uniqueNonEmpty([
+    message?.from,
+    `${brevoConfig?.sender?.name || 'Ledgerly'} <${brevoConfig?.sender?.email || ''}>`,
+    defaultFrom
+  ]);
+
+  const timeout = toPositiveInt(process.env.BREVO_TIMEOUT_MS, 30000);
+  let lastError = null;
+
+  for (const candidate of senderCandidates) {
+    const sender = parseSenderAddress(candidate, brevoConfig?.sender?.name || 'Ledgerly');
+    if (!sender.email) {
+      continue;
+    }
+
+    const payload = {
+      sender,
+      to: recipients,
+      subject: sanitizeText(message?.subject) || 'Ledgerly notification',
+      htmlContent: sanitizeText(message?.html),
+      textContent: sanitizeText(message?.text),
+      attachment: buildBrevoAttachments(message?.attachments)
+    };
+
+    if (!payload.htmlContent && !payload.textContent) {
+      payload.textContent = payload.subject;
+    }
+
+    if (!payload.attachment.length) {
+      delete payload.attachment;
+    }
+
+    try {
+      const response = await axios.post(
+        `${brevoConfig.apiBaseUrl.replace(/\/+$/, '')}/smtp/email`,
+        payload,
+        {
+          headers: {
+            'api-key': brevoConfig.apiKey,
+            Accept: 'application/json',
+            'Content-Type': 'application/json'
+          },
+          timeout
+        }
+      );
+
+      const messageId = response?.data?.messageId || response?.headers?.['x-message-id'] || '';
+      console.log('Email sent (Brevo API):', messageId || '(no id)');
+      return {
+        messageId,
+        accepted: recipients.map((recipient) => recipient.email),
+        rejected: []
+      };
+    } catch (error) {
+      lastError = new Error(parseHttpErrorMessage(error, 'Brevo API request failed'));
+      const looksLikeSenderIssue = /from|sender|domain|forbidden|unauthorized|invalid/i.test(
+        String(lastError.message || '')
+      );
+      if (!looksLikeSenderIssue) {
+        break;
+      }
+    }
+  }
+
+  throw lastError || new Error('Brevo API request failed');
 };
 
 const buildBusinessEmailConfig = (integrationEmail = {}) => {
@@ -372,6 +661,10 @@ const tryAlternativeDefaultTransport = async ({ defaultEmailConfig, message }) =
 // Send email function
 const sendEmail = async (options) => {
   const defaultEmailConfig = getEmailConfig();
+  const preferredProvider = resolvePreferredProvider();
+  const prefersBrevo = ['brevo', 'sendinblue', 'sib'].includes(preferredProvider);
+  const brevoConfig = getBrevoConfig(defaultEmailConfig.from);
+  const resendConfig = getResendConfig(defaultEmailConfig.from);
   const businessTransport = await getBusinessTransport(options?.businessId);
   const defaultTransporter = getTransporter();
 
@@ -412,10 +705,48 @@ const sendEmail = async (options) => {
     message.attachments = options.attachments;
   }
 
+  if (prefersBrevo && brevoConfig) {
+    try {
+      return await sendViaBrevo({
+        brevoConfig,
+        message,
+        defaultFrom: defaultEmailConfig.from
+      });
+    } catch (brevoError) {
+      console.error('Preferred Brevo provider failed, falling back to SMTP:', brevoError);
+    }
+  }
+
+  if (preferredProvider === 'resend' && resendConfig) {
+    try {
+      return await sendViaResend({
+        resendConfig,
+        message,
+        defaultFrom: defaultEmailConfig.from
+      });
+    } catch (resendError) {
+      console.error('Preferred Resend provider failed, falling back to SMTP:', resendError);
+    }
+  }
+
   const transporter = businessTransport?.transporter || defaultTransporter;
   if (!transporter) {
+    if (brevoConfig) {
+      return sendViaBrevo({
+        brevoConfig,
+        message,
+        defaultFrom: defaultEmailConfig.from
+      });
+    }
+    if (resendConfig) {
+      return sendViaResend({
+        resendConfig,
+        message,
+        defaultFrom: defaultEmailConfig.from
+      });
+    }
     throw new Error(
-      'Email service is not configured. Add SMTP credentials in Settings > Integrations (Email) or set MAIL_*/EMAIL_*/SMTP_* env variables.'
+      'Email service is not configured. Set BREVO_API_KEY or RESEND_API_KEY (recommended on Render Free), or add MAIL_*/EMAIL_*/SMTP_* credentials.'
     );
   }
 
@@ -452,6 +783,33 @@ const sendEmail = async (options) => {
             return info;
           }
         }
+
+        if (brevoConfig && shouldTryDefaultTransportFallback(fallbackError)) {
+          try {
+            console.warn('Global SMTP fallback failed, retrying with Brevo HTTP API');
+            return await sendViaBrevo({
+              brevoConfig,
+              message,
+              defaultFrom: defaultEmailConfig.from
+            });
+          } catch (brevoError) {
+            console.error('Brevo fallback failed:', brevoError);
+          }
+        }
+
+        if (resendConfig && shouldTryDefaultTransportFallback(fallbackError)) {
+          try {
+            console.warn('Global SMTP fallback failed, retrying with Resend HTTP API');
+            return await sendViaResend({
+              resendConfig,
+              message,
+              defaultFrom: defaultEmailConfig.from
+            });
+          } catch (resendError) {
+            console.error('Resend fallback failed:', resendError);
+          }
+        }
+
         console.error('Global SMTP fallback failed:', fallbackError);
         throw fallbackError;
       }
@@ -467,6 +825,32 @@ const sendEmail = async (options) => {
       });
       if (info) {
         return info;
+      }
+    }
+
+    if (brevoConfig && shouldTryDefaultTransportFallback(error)) {
+      try {
+        console.warn('SMTP delivery failed, retrying with Brevo HTTP API');
+        return await sendViaBrevo({
+          brevoConfig,
+          message,
+          defaultFrom: defaultEmailConfig.from
+        });
+      } catch (brevoError) {
+        console.error('Brevo fallback failed:', brevoError);
+      }
+    }
+
+    if (resendConfig && shouldTryDefaultTransportFallback(error)) {
+      try {
+        console.warn('SMTP delivery failed, retrying with Resend HTTP API');
+        return await sendViaResend({
+          resendConfig,
+          message,
+          defaultFrom: defaultEmailConfig.from
+        });
+      } catch (resendError) {
+        console.error('Resend fallback failed:', resendError);
       }
     }
 

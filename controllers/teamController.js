@@ -17,6 +17,10 @@ const {
 const getRequesterRole = (req) => req.user?.effectiveRole || normalizeRole(req.user?.role);
 const ADMIN_ALLOWED_ROLES = ['admin', 'accountant', 'staff', 'client', 'viewer'];
 const isProtectedAdminRole = (role) => isSuperAdmin(role) || isAdmin(role);
+const isEmailDeliveryConfigured = () =>
+  Boolean(String(process.env.BREVO_API_KEY || process.env.SENDINBLUE_API_KEY || '').trim())
+  || Boolean(String(process.env.RESEND_API_KEY || '').trim())
+  || Boolean(process.env.EMAIL_HOST && process.env.EMAIL_USER && process.env.EMAIL_PASS);
 
 const clonePermissions = (value) => JSON.parse(JSON.stringify(value || {}));
 
@@ -128,7 +132,7 @@ exports.inviteTeamMember = asyncHandler(async (req, res, next) => {
 
   const baseUrl = process.env.FRONTEND_URL || process.env.REACT_APP_URL || `${req.protocol}://${req.get('host')}`;
   const inviteUrl = await sendInviteEmail(user.email, user.name, token, req.user.name, baseUrl);
-  const emailConfigured = Boolean(process.env.EMAIL_HOST && process.env.EMAIL_USER && process.env.EMAIL_PASS);
+  const emailConfigured = isEmailDeliveryConfigured();
 
   await logAuditEntry(req, 'invite-team-member', 'User', { userId: user._id, email: user.email });
 
@@ -164,7 +168,7 @@ exports.resendInvitation = asyncHandler(async (req, res, next) => {
 
   const baseUrl = process.env.FRONTEND_URL || process.env.REACT_APP_URL || `${req.protocol}://${req.get('host')}`;
   const inviteUrl = await sendInviteEmail(user.email, user.name, token, req.user.name, baseUrl);
-  const emailConfigured = Boolean(process.env.EMAIL_HOST && process.env.EMAIL_USER && process.env.EMAIL_PASS);
+  const emailConfigured = isEmailDeliveryConfigured();
 
   await logAuditEntry(req, 'resend-invitation', 'User', { userId: user._id });
 
