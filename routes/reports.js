@@ -24,13 +24,13 @@ router.get('/inventory', authorize('admin', 'accountant'), checkFeatureAccess('i
 router.get('/profit-loss', authorize('admin', 'accountant'), checkFeatureAccess('advancedReporting'), getProfitLossReport);
 
 router.route('/history')
-  .get(authorize('admin', 'accountant'), checkFeatureAccess('advancedReporting'), listReports)
-  .post(authorize('admin', 'accountant'), checkFeatureAccess('advancedReporting'), createReport);
+  .get(authorize('admin', 'accountant'), listReports)
+  .post(authorize('admin', 'accountant'), createReport);
 
 router.route('/history/:id')
-  .patch(authorize('admin', 'accountant'), checkFeatureAccess('advancedReporting'), updateReport)
-  .delete(authorize('admin', 'accountant'), checkFeatureAccess('advancedReporting'), deleteReport);
+  .patch(authorize('admin', 'accountant'), updateReport)
+  .delete(authorize('admin', 'accountant'), deleteReport);
 
-router.post('/history/:id/download', authorize('admin', 'accountant'), checkFeatureAccess('advancedReporting'), recordDownload);
+router.post('/history/:id/download', authorize('admin', 'accountant'), recordDownload);
 
 module.exports = router;

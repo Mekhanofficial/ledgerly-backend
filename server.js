@@ -1,4 +1,5 @@
 const express = require('express');
+const path = require('path');
 const dotenv = require('dotenv');
 const cors = require('cors');
 const helmet = require('helmet');
@@ -75,7 +76,10 @@ app.use(cors(corsOptions));
 app.options('*', cors(corsOptions));
 
 // Security middleware
-app.use(helmet());
+app.use(helmet({
+  // Allow uploaded files to be embedded from frontend origins.
+  crossOriginResourcePolicy: { policy: 'cross-origin' }
+}));
 app.use(mongoSanitize());
 app.use(xss());
 app.use(hpp());
@@ -91,7 +95,7 @@ app.use('/api', limiter);
 // Static folder (allow cross-origin image loading from the frontend)
 app.use(
   '/uploads',
-  express.static('uploads', {
+  express.static(path.join(__dirname, 'uploads'), {
     setHeaders: (res) => {
       res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
     }

@@ -409,24 +409,29 @@ exports.emailReceipt = asyncHandler(async (req, res, next) => {
   
   const pdfBuffer = await generatePDF.receipt(receipt);
   
-  await sendEmail({
-    to: recipientEmail,
-    subject: `Receipt ${receipt.receiptNumber} from ${receipt.business.name}`,
-    template: 'receipt',
-    context: {
-      customerName: receipt.customer.name,
-      businessName: receipt.business.name,
-      receiptNumber: receipt.receiptNumber,
-      paymentDate: receipt.date.toLocaleDateString(),
-      amountPaid: receipt.amountPaid.toFixed(2),
-      paymentMethod: receipt.paymentMethod
-    },
-    attachments: [{
-      filename: `receipt-${receipt.receiptNumber}.pdf`,
-      content: pdfBuffer,
-      contentType: 'application/pdf'
-    }]
-  });
+  try {
+    await sendEmail({
+      businessId: req.user.business,
+      to: recipientEmail,
+      subject: `Receipt ${receipt.receiptNumber} from ${receipt.business.name}`,
+      template: 'receipt',
+      context: {
+        customerName: receipt.customer.name,
+        businessName: receipt.business.name,
+        receiptNumber: receipt.receiptNumber,
+        paymentDate: receipt.date.toLocaleDateString(),
+        amountPaid: receipt.amountPaid.toFixed(2),
+        paymentMethod: receipt.paymentMethod
+      },
+      attachments: [{
+        filename: `receipt-${receipt.receiptNumber}.pdf`,
+        content: pdfBuffer,
+        contentType: 'application/pdf'
+      }]
+    });
+  } catch (error) {
+    return next(new ErrorResponse(error?.message || 'Unable to send receipt email', 502));
+  }
   
   res.status(200).json({
     success: true,

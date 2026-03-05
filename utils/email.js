@@ -1,7 +1,109 @@
+const nodemailer = require('nodemailer');
+const Settings = require('../models/Settings');
 const { getTransporter } = require('./mailer');
 const { getEmailConfig } = require('../config/email');
 
-const emailConfig = getEmailConfig();
+const businessTransportCache = new Map();
+
+const toPositiveInt = (value, fallback = 0) => {
+  const parsed = Number.parseInt(String(value ?? ''), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+};
+
+const toBoolean = (value, fallback = false) => {
+  if (typeof value === 'boolean') return value;
+  if (value === 'true') return true;
+  if (value === 'false') return false;
+  return fallback;
+};
+
+const buildBusinessEmailConfig = (integrationEmail = {}) => {
+  if (!integrationEmail || integrationEmail.enabled !== true) {
+    return null;
+  }
+
+  const host = String(integrationEmail.host || '').trim();
+  const provider = String(integrationEmail.provider || '').trim().toLowerCase();
+  const service = String(integrationEmail.service || (provider === 'gmail' ? 'gmail' : '')).trim();
+  const user = String(integrationEmail.username || integrationEmail.user || '').trim();
+  const pass = String(integrationEmail.password || integrationEmail.pass || '').trim();
+  const fromEmail = String(integrationEmail.fromEmail || '').trim();
+  const fromName = String(integrationEmail.fromName || 'Ledgerly').trim();
+  const explicitFrom = String(integrationEmail.from || '').trim();
+  const port = toPositiveInt(integrationEmail.port, 587);
+  const secure = toBoolean(integrationEmail.secure, port === 465);
+
+  if ((!host && !service) || !user || !pass) {
+    return null;
+  }
+
+  const transport = {
+    secure,
+    auth: {
+      user,
+      pass
+    }
+  };
+
+  if (host) {
+    transport.host = host;
+  }
+  if (service) {
+    transport.service = service;
+  }
+  if (port) {
+    transport.port = port;
+  }
+
+  const from = explicitFrom || (fromEmail ? `${fromName} <${fromEmail}>` : `Ledgerly <${user}>`);
+
+  return {
+    transport,
+    from
+  };
+};
+
+const getBusinessTransport = async (businessId) => {
+  const normalizedBusinessId = String(businessId || '').trim();
+  if (!normalizedBusinessId) {
+    return null;
+  }
+
+  try {
+    const settings = await Settings.findOne({ business: normalizedBusinessId })
+      .select('integrations.email')
+      .lean();
+
+    const resolvedConfig = buildBusinessEmailConfig(settings?.integrations?.email);
+    if (!resolvedConfig) {
+      return null;
+    }
+
+    const cacheKey = JSON.stringify(resolvedConfig.transport);
+    const cached = businessTransportCache.get(normalizedBusinessId);
+
+    if (cached && cached.key === cacheKey) {
+      return {
+        transporter: cached.transporter,
+        from: resolvedConfig.from
+      };
+    }
+
+    const transporter = nodemailer.createTransport(resolvedConfig.transport);
+    businessTransportCache.set(normalizedBusinessId, {
+      key: cacheKey,
+      transporter
+    });
+
+    return {
+      transporter,
+      from: resolvedConfig.from
+    };
+  } catch (error) {
+    console.error('Unable to resolve business email integration config:', error?.message || error);
+    return null;
+  }
+};
 
 // Email templates
 const templates = {
@@ -156,8 +258,11 @@ const templates = {
 
 // Send email function
 const sendEmail = async (options) => {
+  const defaultEmailConfig = getEmailConfig();
+  const businessTransport = await getBusinessTransport(options?.businessId);
+
   const message = {
-    from: emailConfig.from,
+    from: options.from || businessTransport?.from || defaultEmailConfig.from,
     to: options.to,
     subject: options.subject,
     text: options.text || options.subject,
@@ -193,10 +298,10 @@ const sendEmail = async (options) => {
     message.attachments = options.attachments;
   }
 
-  const transporter = getTransporter();
+  const transporter = businessTransport?.transporter || getTransporter();
   if (!transporter) {
     throw new Error(
-      'Email service is not configured. Set MAIL_HOST/MAIL_USER/MAIL_PASS (or EMAIL_*/SMTP_* equivalents).'
+      'Email service is not configured. Add SMTP credentials in Settings > Integrations (Email) or set MAIL_*/EMAIL_*/SMTP_* env variables.'
     );
   }
 

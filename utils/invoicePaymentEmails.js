@@ -21,14 +21,25 @@ const toDateText = (value) => {
   return date.toLocaleDateString();
 };
 
+const resolveBusinessId = (invoice, business) => (
+  business?._id
+  || business?.id
+  || invoice?.business?._id
+  || invoice?.business?.id
+  || invoice?.business
+  || null
+);
+
 const sendInvoicePaymentLinkEmail = async ({ invoice, business, customerEmail, customerName, paymentLink }) => {
   if (!customerEmail) return null;
 
   const invoiceNumber = invoice?.invoiceNumber || 'Invoice';
   const businessName = business?.name || 'Business';
   const amountText = formatAmount(invoice?.balance ?? invoice?.total ?? 0, invoice?.currency);
+  const businessId = resolveBusinessId(invoice, business);
 
   return sendEmail({
+    businessId,
     to: customerEmail,
     subject: `Invoice ${invoiceNumber} from ${businessName}`,
     html: `
@@ -51,11 +62,13 @@ const sendInvoicePaymentConfirmationEmails = async ({ invoice, business, referen
   const businessName = business?.name || 'Business';
   const amountText = formatAmount(amount ?? invoice?.total ?? 0, invoice?.currency);
   const clientEmail = invoice?.clientEmail || invoice?.customer?.email;
+  const businessId = resolveBusinessId(invoice, business);
 
   const jobs = [];
 
   if (clientEmail) {
     jobs.push(sendEmail({
+      businessId,
       to: clientEmail,
       subject: `Payment Received for Invoice ${invoiceNumber}`,
       html: `
@@ -69,6 +82,7 @@ const sendInvoicePaymentConfirmationEmails = async ({ invoice, business, referen
 
   if (business?.email) {
     jobs.push(sendEmail({
+      businessId,
       to: business.email,
       subject: `Invoice Paid - ${invoiceNumber}`,
       html: `

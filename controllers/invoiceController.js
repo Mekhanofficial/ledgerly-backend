@@ -128,6 +128,23 @@ const getBackendBaseUrl = (req) => {
   return `${protocol}://${host}`;
 };
 
+const toSafeEmailErrorMessage = (error) => {
+  const raw = String(error?.message || '').trim();
+  if (!raw) {
+    return 'Email delivery failed. Verify SMTP settings and try again.';
+  }
+  if (/not configured/i.test(raw)) {
+    return 'Email service is not configured. Add SMTP settings in Settings > Integrations > Email.';
+  }
+  if (/auth|invalid login|username|password|535|534|credentials/i.test(raw)) {
+    return 'SMTP authentication failed. Verify provider username/password and security settings.';
+  }
+  if (/econn|enotfound|etimedout|timeout|connection/i.test(raw)) {
+    return 'Could not connect to SMTP server. Verify host, port, and secure settings.';
+  }
+  return raw;
+};
+
 const interpolateTemplateText = (input, context = {}) => {
   return String(input || '').replace(/{{\s*([a-zA-Z0-9_]+)\s*}}/g, (match, key) => {
     const resolved = context[key];
@@ -933,22 +950,27 @@ exports.sendInvoice = asyncHandler(async (req, res, next) => {
   });
 
   // Send email
-  await sendEmail({
-    to: recipientEmail,
-    subject: resolvedSubject,
-    text: resolvedMessage,
-    html: buildInvoiceEmailHtml({
-      invoice,
-      context: mailContext,
-      message: resolvedMessage,
-      templateMeta
-    }),
-    attachments: [{
-      filename: `invoice-${invoice.invoiceNumber}.pdf`,
-      content: pdfBuffer,
-      contentType: 'application/pdf'
-    }]
-  });
+  try {
+    await sendEmail({
+      businessId: req.user.business,
+      to: recipientEmail,
+      subject: resolvedSubject,
+      text: resolvedMessage,
+      html: buildInvoiceEmailHtml({
+        invoice,
+        context: mailContext,
+        message: resolvedMessage,
+        templateMeta
+      }),
+      attachments: [{
+        filename: `invoice-${invoice.invoiceNumber}.pdf`,
+        content: pdfBuffer,
+        contentType: 'application/pdf'
+      }]
+    });
+  } catch (error) {
+    return next(new ErrorResponse(toSafeEmailErrorMessage(error), 502));
+  }
 
   // Update invoice status
   invoice.clientEmail = recipientEmail;
@@ -1147,25 +1169,30 @@ exports.recordPayment = asyncHandler(async (req, res, next) => {
     const receiptPDF = await generatePDF.receipt(receiptForPdf);
     
     if (invoice.customer?.email) {
-      await sendEmail({
-        to: invoice.customer.email,
-        subject: `Receipt for Invoice ${invoice.invoiceNumber}`,
-        template: 'receipt',
-        context: {
-          customerName: invoice.customer?.name || 'Customer',
-          businessName: invoice.business?.name || 'Business',
-          receiptNumber: receipt.receiptNumber,
-          invoiceNumber: invoice.invoiceNumber,
-          paymentDate: new Date().toLocaleDateString(),
-          amountPaid: amount.toFixed(2),
-          paymentMethod
-        },
-        attachments: [{
-          filename: `receipt-${receipt.receiptNumber}.pdf`,
-          content: receiptPDF,
-          contentType: 'application/pdf'
-        }]
-      });
+      try {
+        await sendEmail({
+          businessId: req.user.business,
+          to: invoice.customer.email,
+          subject: `Receipt for Invoice ${invoice.invoiceNumber}`,
+          template: 'receipt',
+          context: {
+            customerName: invoice.customer?.name || 'Customer',
+            businessName: invoice.business?.name || 'Business',
+            receiptNumber: receipt.receiptNumber,
+            invoiceNumber: invoice.invoiceNumber,
+            paymentDate: new Date().toLocaleDateString(),
+            amountPaid: amount.toFixed(2),
+            paymentMethod
+          },
+          attachments: [{
+            filename: `receipt-${receipt.receiptNumber}.pdf`,
+            content: receiptPDF,
+            contentType: 'application/pdf'
+          }]
+        });
+      } catch (error) {
+        console.error('Unable to send receipt email:', toSafeEmailErrorMessage(error));
+      }
     } else {
       console.warn('Skipping receipt email because customer email is missing', {
         invoiceId: invoice._id?.toString?.() || invoice._id
@@ -1259,25 +1286,30 @@ exports.sendReminder = asyncHandler(async (req, res, next) => {
     : payNowUrl;
 
   // Send reminder email
-  await sendEmail({
-    to: invoice.customer.email,
-    subject: `Reminder: Invoice ${invoice.invoiceNumber} from ${invoice.business.name}`,
-    template: 'payment-reminder',
-    context: {
-      customerName: invoice.customer.name,
-      businessName: invoice.business.name,
-      invoiceNumber: invoice.invoiceNumber,
-      invoiceDate: invoice.date.toLocaleDateString(),
-      dueDate: invoice.dueDate.toLocaleDateString(),
-      overdueDays: invoice.aging,
-      amountDue: invoice.balance.toFixed(2),
-      totalAmount: invoice.total.toFixed(2),
-      currency: invoice.currency,
-      lateFeeMessage,
-      invoiceUrl,
-      payNowUrl
-    }
-  });
+  try {
+    await sendEmail({
+      businessId: req.user.business,
+      to: invoice.customer.email,
+      subject: `Reminder: Invoice ${invoice.invoiceNumber} from ${invoice.business.name}`,
+      template: 'payment-reminder',
+      context: {
+        customerName: invoice.customer.name,
+        businessName: invoice.business.name,
+        invoiceNumber: invoice.invoiceNumber,
+        invoiceDate: invoice.date.toLocaleDateString(),
+        dueDate: invoice.dueDate.toLocaleDateString(),
+        overdueDays: invoice.aging,
+        amountDue: invoice.balance.toFixed(2),
+        totalAmount: invoice.total.toFixed(2),
+        currency: invoice.currency,
+        lateFeeMessage,
+        invoiceUrl,
+        payNowUrl
+      }
+    });
+  } catch (error) {
+    return next(new ErrorResponse(toSafeEmailErrorMessage(error), 502));
+  }
 
   // Update reminder count
   invoice.remindersSent += 1;
