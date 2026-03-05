@@ -277,10 +277,107 @@ const templates = {
   `
 };
 
+const shouldTryDefaultTransportFallback = (error) => {
+  const text = String(error?.message || '').toLowerCase();
+  return /econn|enotfound|ehostunreach|eai_again|etimedout|timeout|connection|network|socket|greeting|tls|ssl|auth|invalid login|credentials|535|534/.test(text);
+};
+
+const assertEmailAccepted = (info) => {
+  if (Array.isArray(info?.rejected) && info.rejected.length > 0) {
+    throw new Error(`Email rejected for recipient(s): ${info.rejected.join(', ')}`);
+  }
+  if (Array.isArray(info?.accepted) && info.accepted.length === 0) {
+    throw new Error('Email was not accepted by SMTP provider');
+  }
+};
+
+const isGmailTransportConfig = (config = {}) => {
+  const host = String(config.host || '').toLowerCase();
+  const service = String(config.service || '').toLowerCase();
+  const user = String(config.user || '').toLowerCase();
+  return host.includes('gmail') || service.includes('gmail') || user.endsWith('@gmail.com');
+};
+
+const buildGmailFallbackTransports = (defaultEmailConfig = {}) => {
+  const user = sanitizeText(defaultEmailConfig.user);
+  const pass = sanitizeText(defaultEmailConfig.pass);
+  if (!user || !pass || !isGmailTransportConfig(defaultEmailConfig)) {
+    return [];
+  }
+
+  const connectionTimeout = toPositiveInt(defaultEmailConfig.connectionTimeout, 20000);
+  const greetingTimeout = toPositiveInt(defaultEmailConfig.greetingTimeout, 20000);
+  const socketTimeout = toPositiveInt(defaultEmailConfig.socketTimeout, 25000);
+  const currentPort = toPositiveInt(defaultEmailConfig.port, 587);
+  const currentSecure = Boolean(defaultEmailConfig.secure);
+
+  const baseTransport = {
+    host: 'smtp.gmail.com',
+    auth: { user, pass },
+    connectionTimeout,
+    greetingTimeout,
+    socketTimeout,
+    family: 4,
+    tls: { minVersion: 'TLSv1.2' }
+  };
+
+  const candidates = [
+    {
+      ...baseTransport,
+      port: 587,
+      secure: false,
+      requireTLS: true
+    },
+    {
+      ...baseTransport,
+      port: 465,
+      secure: true
+    }
+  ];
+
+  return candidates.filter(
+    (candidate) => !(candidate.port === currentPort && candidate.secure === currentSecure)
+  );
+};
+
+const tryAlternativeDefaultTransport = async ({ defaultEmailConfig, message }) => {
+  const candidates = buildGmailFallbackTransports(defaultEmailConfig);
+  let lastError = null;
+
+  for (const transportConfig of candidates) {
+    try {
+      console.warn(
+        `Retrying email with alternate Gmail transport (port=${transportConfig.port}, secure=${transportConfig.secure})`
+      );
+      const transporter = nodemailer.createTransport(transportConfig);
+      const info = await transporter.sendMail({
+        ...message,
+        from: message.from || defaultEmailConfig.from
+      });
+      assertEmailAccepted(info);
+      console.log('Email sent (alternate SMTP transport):', info.messageId);
+      return info;
+    } catch (error) {
+      lastError = error;
+      console.error(
+        `Alternate Gmail transport failed (port=${transportConfig.port}, secure=${transportConfig.secure}):`,
+        error?.message || error
+      );
+    }
+  }
+
+  if (lastError) {
+    throw lastError;
+  }
+
+  return null;
+};
+
 // Send email function
 const sendEmail = async (options) => {
   const defaultEmailConfig = getEmailConfig();
   const businessTransport = await getBusinessTransport(options?.businessId);
+  const defaultTransporter = getTransporter();
 
   const message = {
     from: options.from || businessTransport?.from || defaultEmailConfig.from,
@@ -319,7 +416,7 @@ const sendEmail = async (options) => {
     message.attachments = options.attachments;
   }
 
-  const transporter = businessTransport?.transporter || getTransporter();
+  const transporter = businessTransport?.transporter || defaultTransporter;
   if (!transporter) {
     throw new Error(
       'Email service is not configured. Add SMTP credentials in Settings > Integrations (Email) or set MAIL_*/EMAIL_*/SMTP_* env variables.'
@@ -328,15 +425,55 @@ const sendEmail = async (options) => {
 
   try {
     const info = await transporter.sendMail(message);
-    if (Array.isArray(info?.rejected) && info.rejected.length > 0) {
-      throw new Error(`Email rejected for recipient(s): ${info.rejected.join(', ')}`);
-    }
-    if (Array.isArray(info?.accepted) && info.accepted.length === 0) {
-      throw new Error('Email was not accepted by SMTP provider');
-    }
+    assertEmailAccepted(info);
     console.log('Email sent:', info.messageId);
     return info;
   } catch (error) {
+    const canFallbackToDefault =
+      Boolean(businessTransport?.transporter)
+      && Boolean(defaultTransporter)
+      && businessTransport.transporter !== defaultTransporter
+      && shouldTryDefaultTransportFallback(error);
+
+    if (canFallbackToDefault) {
+      try {
+        const fallbackMessage = {
+          ...message,
+          from: options.from || defaultEmailConfig.from
+        };
+        console.warn('Business SMTP failed, retrying with global SMTP transport');
+        const info = await defaultTransporter.sendMail(fallbackMessage);
+        assertEmailAccepted(info);
+        console.log('Email sent (global fallback):', info.messageId);
+        return info;
+      } catch (fallbackError) {
+        if (shouldTryDefaultTransportFallback(fallbackError)) {
+          const info = await tryAlternativeDefaultTransport({
+            defaultEmailConfig,
+            message
+          });
+          if (info) {
+            return info;
+          }
+        }
+        console.error('Global SMTP fallback failed:', fallbackError);
+        throw fallbackError;
+      }
+    }
+
+    const canRetryDefaultTransport =
+      transporter === defaultTransporter
+      && shouldTryDefaultTransportFallback(error);
+    if (canRetryDefaultTransport) {
+      const info = await tryAlternativeDefaultTransport({
+        defaultEmailConfig,
+        message
+      });
+      if (info) {
+        return info;
+      }
+    }
+
     console.error('Error sending email:', error);
     throw error;
   }
