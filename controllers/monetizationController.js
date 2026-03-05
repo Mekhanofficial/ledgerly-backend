@@ -7,11 +7,15 @@ const UserTemplateUnlock = require('../models/UserTemplateUnlock');
 const templateCatalog = require('../data/templates');
 const {
   PLAN_DEFINITIONS,
+  TEMPLATE_BUNDLE_IDS,
   TEMPLATE_BUNDLE_ID,
   TEMPLATE_BUNDLE_PRICE,
   FREE_TEMPLATE_IDS,
   normalizePlanId,
+  normalizeBundleTier,
   normalizeTemplateCategory,
+  getBundleTemplateId,
+  getTemplateBundlePrice,
   getTemplatePrice,
   isTemplateIncludedInPlan
 } = require('../utils/planConfig');
@@ -132,7 +136,7 @@ const applyPaystackMetadata = async (payload, req) => {
     return { type: 'subscription', plan, billingCycle };
   }
 
-  if (type === 'template' || type === 'lifetime') {
+  if (type === 'template' || type === 'bundle' || type === 'lifetime') {
     const templateId = metadata.templateId;
     const unlockAllTemplates = type === 'lifetime' || metadata.unlockAllTemplates;
     const amount = Number(payload?.amount) / 100;
@@ -148,7 +152,7 @@ const applyPaystackMetadata = async (payload, req) => {
       unlockAllTemplates
     });
 
-    return { type: 'template', templateId, unlockAllTemplates };
+    return { type: type === 'bundle' ? 'bundle' : 'template', templateId, unlockAllTemplates };
   }
 
   return { type: 'unknown' };
@@ -212,12 +216,14 @@ exports.initializeSubscriptionPayment = asyncHandler(async (req, res, next) => {
 exports.initializeTemplatePayment = asyncHandler(async (req, res, next) => {
   const billingOwner = await ensureBillingOwner(req);
   const { templateId, type } = req.body || {};
+  const requestedType = String(type || '').trim().toLowerCase();
+  const bundleTier = normalizeBundleTier(req.body?.bundleTier || req.body?.tier || 'premium');
 
   let amount = TEMPLATE_BUNDLE_PRICE;
   let resolvedTemplateId = null;
   let paymentType = 'lifetime';
 
-  if (type !== 'lifetime') {
+  if (requestedType === 'template' || (!requestedType && templateId)) {
     if (!templateId) {
       return next(new ErrorResponse('templateId is required', 400));
     }
@@ -242,7 +248,25 @@ exports.initializeTemplatePayment = asyncHandler(async (req, res, next) => {
     amount = getTemplatePrice(template);
     resolvedTemplateId = template.id;
     paymentType = 'template';
+  } else if (requestedType === 'bundle') {
+    resolvedTemplateId = getBundleTemplateId(bundleTier);
+    amount = getTemplateBundlePrice(bundleTier);
+    paymentType = 'bundle';
+
+    const existingBundle = await UserTemplateUnlock.findOne({
+      business: billingOwner.business,
+      templateId: resolvedTemplateId
+    });
+    if (existingBundle) {
+      return next(new ErrorResponse('Template bundle already unlocked', 400));
+    }
+    if (resolvedTemplateId === TEMPLATE_BUNDLE_ID && billingOwner?.hasLifetimeTemplates) {
+      return next(new ErrorResponse('Lifetime templates already unlocked', 400));
+    }
   } else {
+    resolvedTemplateId = TEMPLATE_BUNDLE_ID;
+    amount = TEMPLATE_BUNDLE_PRICE;
+    paymentType = 'lifetime';
     const existingBundle = await UserTemplateUnlock.findOne({
       business: billingOwner.business,
       templateId: TEMPLATE_BUNDLE_ID
@@ -266,7 +290,8 @@ exports.initializeTemplatePayment = asyncHandler(async (req, res, next) => {
       templateId: resolvedTemplateId,
       userId: billingOwner._id.toString(),
       businessId: billingOwner.business.toString(),
-      unlockAllTemplates: paymentType === 'lifetime'
+      unlockAllTemplates: paymentType === 'lifetime',
+      bundleTier: paymentType === 'bundle' ? bundleTier : undefined
     }
   });
 

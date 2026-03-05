@@ -12,9 +12,47 @@ const parsePositiveInt = (value, fallback) => {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 };
 
-const FREE_DOCUMENT_LIMIT = parsePositiveInt(process.env.FREE_PLAN_DOCUMENT_LIMIT, 5);
+const MB = 1024 * 1024;
+const GB = 1024 * 1024 * 1024;
+const DOCUMENT_RULES = {
+  starter: {
+    maxDocuments: parsePositiveInt(process.env.STARTER_MAX_DOCUMENTS, 50),
+    maxStorageBytes: parsePositiveInt(process.env.STARTER_MAX_STORAGE_BYTES, 250 * MB),
+    maxFileSizeBytes: parsePositiveInt(process.env.STARTER_MAX_FILE_BYTES, 5 * MB),
+    allowedExtensions: new Set(['pdf', 'jpg', 'jpeg', 'png']),
+    allowImages: true,
+  },
+  professional: {
+    maxDocuments: parsePositiveInt(process.env.PROFESSIONAL_MAX_DOCUMENTS, 1000),
+    maxStorageBytes: parsePositiveInt(process.env.PROFESSIONAL_MAX_STORAGE_BYTES, 5 * GB),
+    maxFileSizeBytes: parsePositiveInt(process.env.PROFESSIONAL_MAX_FILE_BYTES, 15 * MB),
+    allowedExtensions: new Set(['pdf', 'docx', 'xlsx', 'csv', 'jpg', 'jpeg', 'png', 'webp', 'gif']),
+    allowImages: true,
+  },
+  enterprise: {
+    maxDocuments: parsePositiveInt(process.env.ENTERPRISE_MAX_DOCUMENTS, 10000),
+    maxStorageBytes: parsePositiveInt(process.env.ENTERPRISE_MAX_STORAGE_BYTES, 50 * GB),
+    maxFileSizeBytes: parsePositiveInt(process.env.ENTERPRISE_MAX_FILE_BYTES, 50 * MB),
+    allowedExtensions: new Set(['pdf', 'doc', 'docx', 'xls', 'xlsx', 'csv', 'txt', 'ppt', 'pptx', 'jpg', 'jpeg', 'png', 'webp', 'gif']),
+    allowImages: true,
+  },
+};
 
-const isFreePlan = (plan) => normalizePlanId(plan) === 'starter';
+const resolveDocumentRules = (plan) => {
+  const planId = normalizePlanId(plan);
+  if (planId === 'professional' || planId === 'enterprise') {
+    return DOCUMENT_RULES[planId];
+  }
+  return DOCUMENT_RULES.starter;
+};
+
+const isDocumentTypeAllowed = (rules, mimeType, extension) => {
+  const mime = String(mimeType || '').toLowerCase();
+  const ext = String(extension || '').toLowerCase();
+  if (rules.allowedExtensions.has(ext)) return true;
+  if (rules.allowImages && mime.startsWith('image/')) return true;
+  return false;
+};
 
 const resolveFilePath = (filePath) => {
   if (!filePath) return null;
@@ -93,19 +131,65 @@ exports.uploadDocument = asyncHandler(async (req, res, next) => {
 
   const billingOwner = await resolveBillingOwner(req.user);
   const effectivePlan = resolveEffectivePlan(billingOwner);
-  if (isFreePlan(effectivePlan)) {
-    const count = await Document.countDocuments({ business: business._id });
-    if (count >= FREE_DOCUMENT_LIMIT) {
-      return next(
-        new ErrorResponse(
-          `Free plan limit reached. Upgrade to upload more than ${FREE_DOCUMENT_LIMIT} documents.`,
-          403
-        )
-      );
-    }
-  }
+  const documentRules = resolveDocumentRules(effectivePlan);
 
   const originalName = req.file.originalname || '';
+  const extension = path.extname(originalName).replace('.', '').toLowerCase();
+  const fileSize = Number(req.file.size) || 0;
+
+  if (fileSize > documentRules.maxFileSizeBytes) {
+    removeFile(req.file.path);
+    return next(
+      new ErrorResponse(
+        `File too large for your plan. Maximum allowed size is ${Math.round(documentRules.maxFileSizeBytes / MB)}MB.`,
+        413
+      )
+    );
+  }
+
+  if (!isDocumentTypeAllowed(documentRules, req.file.mimetype, extension)) {
+    removeFile(req.file.path);
+    return next(
+      new ErrorResponse(
+        'File type is not allowed for your plan.',
+        400
+      )
+    );
+  }
+
+  const [usage] = await Document.aggregate([
+    { $match: { business: business._id } },
+    {
+      $group: {
+        _id: null,
+        count: { $sum: 1 },
+        totalSize: { $sum: { $ifNull: ['$size', 0] } }
+      }
+    }
+  ]);
+
+  const existingCount = Number(usage?.count || 0);
+  const existingStorage = Number(usage?.totalSize || 0);
+  if (existingCount >= documentRules.maxDocuments) {
+    removeFile(req.file.path);
+    return next(
+      new ErrorResponse(
+        `Document limit reached for your plan (${documentRules.maxDocuments}). Upgrade to upload more.`,
+        403
+      )
+    );
+  }
+
+  if (existingStorage + fileSize > documentRules.maxStorageBytes) {
+    removeFile(req.file.path);
+    return next(
+      new ErrorResponse(
+        `Storage limit reached for your plan (${Math.round(documentRules.maxStorageBytes / MB)}MB).`,
+        403
+      )
+    );
+  }
+
   const resolvedName = (req.body.name || originalName || 'Untitled document').toString().trim();
   const filePath = req.file.path.split(path.sep).join('/');
 

@@ -93,6 +93,32 @@ const SettingsSchema = new mongoose.Schema({
       recipients: [String]
     }
   },
+  security: {
+    twoFactorEnabled: {
+      type: Boolean,
+      default: false
+    },
+    loginAlerts: {
+      type: Boolean,
+      default: true
+    },
+    trustedDevicesOnly: {
+      type: Boolean,
+      default: false
+    },
+    sessionTimeoutMinutes: {
+      type: Number,
+      default: 60,
+      min: 5,
+      max: 1440
+    },
+    rememberMeDays: {
+      type: Number,
+      default: 30,
+      min: 1,
+      max: 365
+    }
+  },
   rolePermissions: {
     type: mongoose.Schema.Types.Mixed,
     default: {}

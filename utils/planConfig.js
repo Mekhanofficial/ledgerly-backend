@@ -1,13 +1,11 @@
-const YEARLY_DISCOUNT = 0.2;
-const toYearlyPrice = (monthlyPrice) =>
-  Number((Number(monthlyPrice) * 12 * (1 - YEARLY_DISCOUNT)).toFixed(2));
+const YEARLY_DISCOUNT = 0;
 
 const PLAN_DEFINITIONS = {
   starter: {
     id: 'starter',
     name: 'Starter',
-    monthlyPrice: 9,
-    yearlyPrice: toYearlyPrice(9),
+    monthlyPrice: 2000,
+    yearlyPrice: 24000,
     maxInvoicesPerMonth: 100,
     allowRecurring: false,
     allowApi: false,
@@ -22,8 +20,8 @@ const PLAN_DEFINITIONS = {
   professional: {
     id: 'professional',
     name: 'Professional',
-    monthlyPrice: 29,
-    yearlyPrice: toYearlyPrice(29),
+    monthlyPrice: 7000,
+    yearlyPrice: 84000,
     maxInvoicesPerMonth: Infinity,
     allowRecurring: true,
     allowApi: true,
@@ -38,8 +36,8 @@ const PLAN_DEFINITIONS = {
   enterprise: {
     id: 'enterprise',
     name: 'Enterprise',
-    monthlyPrice: 79,
-    yearlyPrice: toYearlyPrice(79),
+    monthlyPrice: 30000,
+    yearlyPrice: 360000,
     maxInvoicesPerMonth: Infinity,
     allowRecurring: true,
     allowApi: true,
@@ -54,13 +52,22 @@ const PLAN_DEFINITIONS = {
 };
 
 const TEMPLATE_PRICING = {
-  STANDARD: 5,
-  PREMIUM: 12,
-  ELITE: 25
+  STANDARD: 0,
+  PREMIUM: 3500,
+  ELITE: 8500
 };
 
-const TEMPLATE_BUNDLE_PRICE = 79;
-const TEMPLATE_BUNDLE_ID = 'bundle_all_templates';
+const TEMPLATE_BUNDLE_IDS = {
+  PREMIUM: 'bundle_premium_templates',
+  ELITE: 'bundle_elite_templates',
+  ALL: 'bundle_all_templates'
+};
+const TEMPLATE_BUNDLE_PRICING = {
+  PREMIUM: 10000,
+  ELITE: 25000
+};
+const TEMPLATE_BUNDLE_ID = TEMPLATE_BUNDLE_IDS.ALL;
+const TEMPLATE_BUNDLE_PRICE = TEMPLATE_BUNDLE_PRICING.PREMIUM + TEMPLATE_BUNDLE_PRICING.ELITE;
 const FREE_TEMPLATE_IDS = new Set(['standard', 'minimal']);
 
 const normalizePlanId = (plan) => {
@@ -85,14 +92,38 @@ const normalizeTemplateCategory = (category) => {
   return 'STANDARD';
 };
 
+const normalizeBundleTier = (tier) => {
+  const value = String(tier || 'premium').trim().toUpperCase();
+  if (value === 'PREMIUM' || value === 'ELITE' || value === 'ALL') {
+    return value;
+  }
+  return 'PREMIUM';
+};
+
+const getBundleTemplateId = (tier) => {
+  const normalizedTier = normalizeBundleTier(tier);
+  if (normalizedTier === 'ELITE') return TEMPLATE_BUNDLE_IDS.ELITE;
+  if (normalizedTier === 'ALL') return TEMPLATE_BUNDLE_IDS.ALL;
+  return TEMPLATE_BUNDLE_IDS.PREMIUM;
+};
+
+const getTemplateBundlePrice = (tier) => {
+  const normalizedTier = normalizeBundleTier(tier);
+  if (normalizedTier === 'ELITE') return TEMPLATE_BUNDLE_PRICING.ELITE;
+  if (normalizedTier === 'ALL') return TEMPLATE_BUNDLE_PRICE;
+  return TEMPLATE_BUNDLE_PRICING.PREMIUM;
+};
+
 const getPlanDefinition = (plan) => PLAN_DEFINITIONS[normalizePlanId(plan)] || PLAN_DEFINITIONS.starter;
 
 const getDefaultTemplatePrice = (category) => TEMPLATE_PRICING[normalizeTemplateCategory(category)] || 0;
 
 const getTemplatePrice = (template) => {
   const category = normalizeTemplateCategory(template?.category);
-  if (Number.isFinite(Number(template?.price)) && Number(template.price) > 0) {
-    return Number(template.price);
+  const id = String(template?.id || template?.templateStyle || '').trim().toLowerCase();
+  const isFree = Boolean(template?.isFree) || FREE_TEMPLATE_IDS.has(id);
+  if (isFree || category === 'CUSTOM') {
+    return 0;
   }
   return getDefaultTemplatePrice(category);
 };
@@ -128,11 +159,16 @@ module.exports = {
   YEARLY_DISCOUNT,
   PLAN_DEFINITIONS,
   TEMPLATE_PRICING,
+  TEMPLATE_BUNDLE_IDS,
+  TEMPLATE_BUNDLE_PRICING,
   TEMPLATE_BUNDLE_PRICE,
   TEMPLATE_BUNDLE_ID,
   FREE_TEMPLATE_IDS,
   normalizePlanId,
   normalizeTemplateCategory,
+  normalizeBundleTier,
+  getBundleTemplateId,
+  getTemplateBundlePrice,
   getPlanDefinition,
   getDefaultTemplatePrice,
   getTemplatePrice,

@@ -10,14 +10,13 @@ const { protect, authorize } = require('../middleware/auth');
 const { checkFeatureAccess } = require('../middleware/subscription');
 
 router.use(protect);
-router.use(checkFeatureAccess('inventory'));
 
 router.route('/')
   .get(authorize('admin', 'accountant', 'staff', 'viewer'), getSuppliers)
-  .post(authorize('admin', 'accountant'), createSupplier);
+  .post(authorize('admin', 'accountant'), checkFeatureAccess('inventory'), createSupplier);
 
 router.route('/:id')
-  .put(authorize('admin', 'accountant'), updateSupplier)
-  .delete(authorize('admin', 'accountant'), deleteSupplier);
+  .put(authorize('admin', 'accountant'), checkFeatureAccess('inventory'), updateSupplier)
+  .delete(authorize('admin', 'accountant'), checkFeatureAccess('inventory'), deleteSupplier);
 
 module.exports = router;

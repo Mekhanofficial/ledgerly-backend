@@ -6,11 +6,13 @@ const UserTemplateUnlock = require('../models/UserTemplateUnlock');
 const TemplateEmailSetting = require('../models/TemplateEmailSetting');
 const templateCatalog = require('../data/templates');
 const {
+  TEMPLATE_BUNDLE_IDS,
   TEMPLATE_BUNDLE_ID,
-  TEMPLATE_BUNDLE_PRICE,
   FREE_TEMPLATE_IDS,
-  normalizePlanId,
+  normalizeBundleTier,
   normalizeTemplateCategory,
+  getBundleTemplateId,
+  getTemplateBundlePrice,
   getTemplatePrice,
   isTemplateIncludedInPlan,
   resolveRequiredPlanForTemplate
@@ -77,6 +79,10 @@ const normalizeTemplate = (template, accessContext) => {
   const isFree = Boolean(template.isFree) || FREE_TEMPLATE_IDS.has(template.id);
   const includedInPlan = isTemplateIncludedInPlan(template, accessContext.planId);
   const hasPurchase = accessContext.purchaseMap.has(template.id);
+  const hasTierBundle = (
+    (category === 'PREMIUM' && accessContext.hasPremiumBundle)
+    || (category === 'ELITE' && accessContext.hasEliteBundle)
+  );
 
   let hasAccess = false;
   let accessSource = null;
@@ -88,6 +94,9 @@ const normalizeTemplate = (template, accessContext) => {
     hasAccess = true;
     accessSource = 'free';
   } else if (accessContext.hasBundle) {
+    hasAccess = true;
+    accessSource = 'bundle';
+  } else if (hasTierBundle) {
     hasAccess = true;
     accessSource = 'bundle';
   } else if (includedInPlan) {
@@ -148,17 +157,24 @@ exports.getTemplates = asyncHandler(async (req, res) => {
     ...unlocks.filter((unlock) => unlock.templateId).map((unlock) => unlock.templateId)
   ]);
   const billingOwner = await resolveBillingOwner(req.user);
-  const hasBundle = unlocks.some((unlock) => unlock.unlockAllTemplates || unlock.templateId === TEMPLATE_BUNDLE_ID)
-    || Boolean(billingOwner?.hasLifetimeTemplates);
   if (billingOwner?.purchasedTemplates?.length) {
     billingOwner.purchasedTemplates.forEach((templateId) => purchaseMap.add(templateId));
   }
+  const hasBundle = unlocks.some((unlock) => unlock.unlockAllTemplates || unlock.templateId === TEMPLATE_BUNDLE_ID)
+    || purchaseMap.has(TEMPLATE_BUNDLE_ID)
+    || Boolean(billingOwner?.hasLifetimeTemplates);
+  const hasPremiumBundle = unlocks.some((unlock) => unlock.templateId === TEMPLATE_BUNDLE_IDS.PREMIUM)
+    || purchaseMap.has(TEMPLATE_BUNDLE_IDS.PREMIUM);
+  const hasEliteBundle = unlocks.some((unlock) => unlock.templateId === TEMPLATE_BUNDLE_IDS.ELITE)
+    || purchaseMap.has(TEMPLATE_BUNDLE_IDS.ELITE);
 
   const builtInTemplates = templateCatalog
     .map((template) => normalizeTemplate(template, {
       ...planContext,
       purchaseMap,
-      hasBundle
+      hasBundle,
+      hasPremiumBundle,
+      hasEliteBundle
     }))
     .map((template) => applyTemplateEmailOverride(template, emailOverrideMap));
 
@@ -426,9 +442,13 @@ exports.purchaseTemplate = asyncHandler(async (req, res, next) => {
 // @route   POST /api/v1/templates/bundle/purchase
 // @access  Private
 exports.purchaseTemplateBundle = asyncHandler(async (req, res, next) => {
+  const bundleTier = normalizeBundleTier(req.body?.tier || req.body?.bundleTier || 'all');
+  const bundleTemplateId = getBundleTemplateId(bundleTier);
+  const bundleAmount = getTemplateBundlePrice(bundleTier);
+
   const existing = await UserTemplateUnlock.findOne({
     business: req.user.business,
-    templateId: TEMPLATE_BUNDLE_ID
+    templateId: bundleTemplateId
   });
 
   if (existing) {
@@ -445,16 +465,16 @@ exports.purchaseTemplateBundle = asyncHandler(async (req, res, next) => {
   const unlock = await UserTemplateUnlock.create({
     business: req.user.business,
     user: req.user.id,
-    templateId: TEMPLATE_BUNDLE_ID,
-    unlockAllTemplates: true,
-    amount: TEMPLATE_BUNDLE_PRICE,
+    templateId: bundleTemplateId,
+    unlockAllTemplates: bundleTemplateId === TEMPLATE_BUNDLE_ID,
+    amount: bundleAmount,
     currency,
     transactionId,
     isLifetime: true
   });
 
   const billingOwner = await resolveBillingOwner(req.user);
-  if (billingOwner) {
+  if (billingOwner && bundleTemplateId === TEMPLATE_BUNDLE_ID) {
     billingOwner.hasLifetimeTemplates = true;
     await billingOwner.save();
   }

@@ -51,7 +51,7 @@ exports.getSettings = asyncHandler(async (req, res) => {
 // @route   PUT /api/v1/settings
 // @access  Private (Admin/Accountant)
 exports.updateSettings = asyncHandler(async (req, res, next) => {
-  const { invoice, receipt, preferences, notifications, backup, rolePermissions } = req.body;
+  const { invoice, receipt, preferences, notifications, security, backup, rolePermissions } = req.body;
 
   const settings = await Settings.findOneAndUpdate(
     { business: req.user.business },
@@ -63,6 +63,7 @@ exports.updateSettings = asyncHandler(async (req, res, next) => {
   settings.receipt = settings.receipt || {};
   settings.preferences = settings.preferences || {};
   settings.notifications = settings.notifications || {};
+  settings.security = settings.security || {};
   settings.backup = settings.backup || {};
   settings.rolePermissions = settings.rolePermissions || {};
 
@@ -70,6 +71,7 @@ exports.updateSettings = asyncHandler(async (req, res, next) => {
   mergeSection(settings.receipt, receipt);
   mergeSection(settings.preferences, preferences);
   mergeSection(settings.notifications, notifications);
+  mergeSection(settings.security, security);
   mergeSection(settings.backup, backup);
   mergeSection(settings.rolePermissions, rolePermissions);
 
