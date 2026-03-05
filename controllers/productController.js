@@ -20,6 +20,11 @@ exports.getProducts = asyncHandler(async (req, res, next) => {
   
   const parsedLimit = parseInt(limit, 10) || 20;
   const parsedPage = parseInt(page, 10) || 1;
+  const toNumber = (value, fallback = 0) => {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : fallback;
+  };
+
   let query = { business: req.user.business };
   
   if (search) {
@@ -34,7 +39,12 @@ exports.getProducts = asyncHandler(async (req, res, next) => {
   if (isActive !== undefined) query.isActive = isActive === 'true';
   
   if (lowStock === 'true') {
-    query['stock.available'] = { $lte: '$stock.lowStockThreshold' };
+    query.$expr = {
+      $lte: [
+        { $ifNull: ['$stock.available', { $ifNull: ['$stock.quantity', 0] }] },
+        { $ifNull: ['$stock.lowStockThreshold', 10] }
+      ]
+    };
   }
   
   let products = await Product.find(query)
@@ -49,59 +59,81 @@ exports.getProducts = asyncHandler(async (req, res, next) => {
   // Legacy safety net: older product records may be missing the `business` field.
   // If primary query returns nothing, attempt a scoped recovery for this user and
   // backfill `business` so future requests use the normal path.
-  if (!products.length && req.user?.id) {
-    const legacyQuery = {
-      createdBy: req.user.id,
-      $or: [{ business: { $exists: false } }, { business: null }]
-    };
+  if (!products.length && req.user?.business) {
+    const [businessCategories, businessSuppliers] = await Promise.all([
+      Category.find({ business: req.user.business }).select('_id').lean(),
+      Supplier.find({ business: req.user.business }).select('_id').lean()
+    ]);
 
-    if (search) {
-      legacyQuery.$or = [
-        { business: { $exists: false } },
-        { business: null }
-      ];
-      legacyQuery.$and = [
-        {
+    const categoryIds = businessCategories.map((entry) => entry._id);
+    const supplierIds = businessSuppliers.map((entry) => entry._id);
+    const ownershipSelectors = [];
+
+    if (req.user?.id) {
+      ownershipSelectors.push({ createdBy: req.user.id });
+    }
+    if (categoryIds.length) {
+      ownershipSelectors.push({ category: { $in: categoryIds } });
+    }
+    if (supplierIds.length) {
+      ownershipSelectors.push({ supplier: { $in: supplierIds } });
+    }
+
+    if (ownershipSelectors.length) {
+      const legacyBusinessScope = {
+        $and: [
+          { $or: [{ business: { $exists: false } }, { business: null }] },
+          { $or: ownershipSelectors }
+        ]
+      };
+
+      const legacyFilters = [legacyBusinessScope];
+      if (search) {
+        legacyFilters.push({
           $or: [
             { name: { $regex: search, $options: 'i' } },
             { sku: { $regex: search, $options: 'i' } },
             { description: { $regex: search, $options: 'i' } }
           ]
-        }
-      ];
-    }
+        });
+      }
+      if (category) legacyFilters.push({ category });
+      if (isActive !== undefined) legacyFilters.push({ isActive: isActive === 'true' });
+      if (lowStock === 'true') {
+        legacyFilters.push({
+          $expr: {
+            $lte: [
+              { $ifNull: ['$stock.available', { $ifNull: ['$stock.quantity', 0] }] },
+              { $ifNull: ['$stock.lowStockThreshold', 10] }
+            ]
+          }
+        });
+      }
 
-    if (category) legacyQuery.category = category;
-    if (isActive !== undefined) legacyQuery.isActive = isActive === 'true';
-    if (lowStock === 'true') {
-      legacyQuery['stock.available'] = { $lte: '$stock.lowStockThreshold' };
-    }
+      const legacyQuery = { $and: legacyFilters };
+      const legacyCount = await Product.countDocuments(legacyQuery);
 
-    const legacyProducts = await Product.find(legacyQuery)
-      .populate('category', 'name')
-      .populate('supplier', 'name')
-      .sort({ name: 1 })
-      .skip((parsedPage - 1) * parsedLimit)
-      .limit(parsedLimit);
+      if (legacyCount > 0) {
+        // Backfill all scoped legacy rows, then re-run the standard business query.
+        await Product.updateMany(legacyBusinessScope, { $set: { business: req.user.business } });
 
-    if (legacyProducts.length) {
-      const legacyIds = legacyProducts.map((item) => item._id);
-      await Product.updateMany(
-        {
-          _id: { $in: legacyIds },
-          $or: [{ business: { $exists: false } }, { business: null }]
-        },
-        { $set: { business: req.user.business } }
-      );
+        products = await Product.find(query)
+          .populate('category', 'name')
+          .populate('supplier', 'name')
+          .sort({ name: 1 })
+          .skip((parsedPage - 1) * parsedLimit)
+          .limit(parsedLimit);
 
-      products = legacyProducts;
-      total = await Product.countDocuments(query);
+        total = await Product.countDocuments(query);
+      }
     }
   }
   
   // Calculate total inventory value
   const inventoryValue = products.reduce((total, product) => {
-    return total + (product.stock.quantity * product.costPrice);
+    const stockQuantity = toNumber(product?.stock?.quantity ?? product?.quantity ?? 0);
+    const unitCost = toNumber(product?.costPrice ?? product?.sellingPrice ?? product?.price ?? 0);
+    return total + (stockQuantity * unitCost);
   }, 0);
   
   res.status(200).json({
