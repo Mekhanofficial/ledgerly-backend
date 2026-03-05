@@ -4,10 +4,31 @@ const { getTransporter } = require('./mailer');
 const { getEmailConfig } = require('../config/email');
 
 const businessTransportCache = new Map();
+const PLACEHOLDER_VALUES = new Set([
+  'value',
+  'your_value',
+  'yourvalue',
+  'your_email',
+  'your-email',
+  'your_password',
+  'your-password',
+  'changeme',
+  'replace_me',
+  'replace-me',
+  'null',
+  'undefined'
+]);
 
 const toPositiveInt = (value, fallback = 0) => {
   const parsed = Number.parseInt(String(value ?? ''), 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+};
+
+const sanitizeText = (value) => {
+  const normalized = String(value ?? '').trim();
+  if (!normalized) return '';
+  if (PLACEHOLDER_VALUES.has(normalized.toLowerCase())) return '';
+  return normalized;
 };
 
 const toBoolean = (value, fallback = false) => {
@@ -22,14 +43,14 @@ const buildBusinessEmailConfig = (integrationEmail = {}) => {
     return null;
   }
 
-  const host = String(integrationEmail.host || '').trim();
-  const provider = String(integrationEmail.provider || '').trim().toLowerCase();
-  const service = String(integrationEmail.service || (provider === 'gmail' ? 'gmail' : '')).trim();
-  const user = String(integrationEmail.username || integrationEmail.user || '').trim();
-  const pass = String(integrationEmail.password || integrationEmail.pass || '').trim();
-  const fromEmail = String(integrationEmail.fromEmail || '').trim();
-  const fromName = String(integrationEmail.fromName || 'Ledgerly').trim();
-  const explicitFrom = String(integrationEmail.from || '').trim();
+  const host = sanitizeText(integrationEmail.host);
+  const provider = sanitizeText(integrationEmail.provider).toLowerCase();
+  const service = sanitizeText(integrationEmail.service || (provider === 'gmail' ? 'gmail' : ''));
+  const user = sanitizeText(integrationEmail.username || integrationEmail.user);
+  const pass = sanitizeText(integrationEmail.password || integrationEmail.pass);
+  const fromEmail = sanitizeText(integrationEmail.fromEmail);
+  const fromName = sanitizeText(integrationEmail.fromName) || 'Ledgerly';
+  const explicitFrom = sanitizeText(integrationEmail.from);
   const port = toPositiveInt(integrationEmail.port, 587);
   const secure = toBoolean(integrationEmail.secure, port === 465);
 

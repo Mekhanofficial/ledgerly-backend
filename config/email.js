@@ -127,7 +127,7 @@ const getEmailConfig = () => {
       process.env.EMAIL_TIMEOUT,
       process.env.SMTP_TIMEOUT
     ),
-    8000
+    20000
   );
   const greetingTimeout = parsePositiveInt(
     firstNonEmpty(
@@ -139,7 +139,7 @@ const getEmailConfig = () => {
       process.env.EMAIL_TIMEOUT,
       process.env.SMTP_TIMEOUT
     ),
-    8000
+    20000
   );
   const socketTimeout = parsePositiveInt(
     firstNonEmpty(
@@ -151,7 +151,7 @@ const getEmailConfig = () => {
       process.env.EMAIL_TIMEOUT,
       process.env.SMTP_TIMEOUT
     ),
-    12000
+    25000
   );
   const from = firstNonEmpty(
     process.env.MAIL_FROM,

@@ -5,9 +5,24 @@ const Payment = require('../models/Payment');
 const Customer = require('../models/Customer');
 const Product = require('../models/Product');
 const Receipt = require('../models/Receipt');
+const PartnerIntegration = require('../models/PartnerIntegration');
 const ErrorResponse = require('../utils/errorResponse');
 const asyncHandler = require('../utils/asyncHandler');
 const { normalizeRole, isRoleSupported } = require('../utils/rolePermissions');
+const {
+  createPartnerApiKey,
+  hashApiKey,
+  getApiKeyPrefix,
+  getApiKeyLast4,
+  normalizePartnerScopes,
+  normalizeRateLimitPerMinute,
+  normalizeTemplateIdList,
+  sanitizePartner
+} = require('../utils/partnerApi');
+const {
+  resolveCanonicalTemplateId,
+  resolveBusinessTemplateContext
+} = require('../utils/templateAccess');
 
 const buildSearchFilter = (search, fields) => {
   if (!search) return null;
@@ -15,18 +30,91 @@ const buildSearchFilter = (search, fields) => {
   return { $or: fields.map((field) => ({ [field]: regex })) };
 };
 
+const toBoolean = (value, fallback = false) => {
+  if (value === undefined || value === null) return fallback;
+  if (typeof value === 'boolean') return value;
+  const normalized = String(value).trim().toLowerCase();
+  if (normalized === 'true') return true;
+  if (normalized === 'false') return false;
+  return fallback;
+};
+
+const mapPartnerResponse = (partnerDoc) => {
+  const partner = sanitizePartner(partnerDoc);
+  const keyPrefix = String(partner.keyPrefix || '');
+  const keyLast4 = String(partner.keyLast4 || '');
+  const maskedTailLength = Math.max(8, 16 - keyLast4.length);
+  return {
+    ...partner,
+    apiKeyMasked: keyLast4 ? `${keyPrefix}${'*'.repeat(maskedTailLength)}${keyLast4}` : ''
+  };
+};
+
+const resolvePartnerTemplateConfig = ({
+  templateContext,
+  allowAllTemplates,
+  providedAllowedTemplateIds,
+  providedDefaultTemplateId,
+  fallbackAllowedTemplateIds = [],
+  fallbackDefaultTemplateId = 'standard'
+}) => {
+  const accessibleTemplateIds = templateContext.accessibleTemplateIds;
+  const normalizedAllowed = normalizeTemplateIdList(providedAllowedTemplateIds)
+    .map((templateId) => resolveCanonicalTemplateId(templateId, templateContext.templateLookup))
+    .filter((templateId) => accessibleTemplateIds.has(templateId));
+
+  const fallbackAllowed = normalizeTemplateIdList(fallbackAllowedTemplateIds)
+    .map((templateId) => resolveCanonicalTemplateId(templateId, templateContext.templateLookup))
+    .filter((templateId) => accessibleTemplateIds.has(templateId));
+
+  let allowedTemplateIds = allowAllTemplates
+    ? []
+    : Array.from(new Set(normalizedAllowed.length ? normalizedAllowed : fallbackAllowed));
+
+  if (!allowAllTemplates && !allowedTemplateIds.length) {
+    if (accessibleTemplateIds.has('standard')) {
+      allowedTemplateIds = ['standard'];
+    } else {
+      const [firstAccessibleTemplate] = Array.from(accessibleTemplateIds);
+      if (firstAccessibleTemplate) {
+        allowedTemplateIds = [firstAccessibleTemplate];
+      }
+    }
+  }
+
+  const defaultTemplateId = resolveCanonicalTemplateId(
+    providedDefaultTemplateId || fallbackDefaultTemplateId || allowedTemplateIds[0] || 'standard',
+    templateContext.templateLookup
+  );
+
+  if (!accessibleTemplateIds.has(defaultTemplateId)) {
+    throw new ErrorResponse('Default template is not available for this business', 400);
+  }
+
+  if (!allowAllTemplates && !allowedTemplateIds.includes(defaultTemplateId)) {
+    allowedTemplateIds = [defaultTemplateId, ...allowedTemplateIds];
+  }
+
+  return {
+    allowAllTemplates,
+    allowedTemplateIds: Array.from(new Set(allowedTemplateIds)),
+    defaultTemplateId
+  };
+};
+
 // @desc    Super admin overview
 // @route   GET /api/v1/super-admin/overview
 // @access  Private (Super Admin)
 exports.getOverview = asyncHandler(async (req, res) => {
-  const [users, businesses, invoices, payments, customers, products, receipts] = await Promise.all([
+  const [users, businesses, invoices, payments, customers, products, receipts, partners] = await Promise.all([
     User.countDocuments(),
     Business.countDocuments(),
     Invoice.countDocuments(),
     Payment.countDocuments(),
     Customer.countDocuments(),
     Product.countDocuments(),
-    Receipt.countDocuments()
+    Receipt.countDocuments(),
+    PartnerIntegration.countDocuments()
   ]);
 
   res.status(200).json({
@@ -38,7 +126,8 @@ exports.getOverview = asyncHandler(async (req, res) => {
       payments,
       customers,
       products,
-      receipts
+      receipts,
+      partners
     }
   });
 });
@@ -360,5 +449,256 @@ exports.getReceipts = asyncHandler(async (req, res) => {
     total,
     pages: Math.ceil(total / limit),
     data: receipts
+  });
+});
+
+// @desc    Get partner template options for a business
+// @route   GET /api/v1/super-admin/partner-template-options
+// @access  Private (Super Admin)
+exports.getPartnerTemplateOptions = asyncHandler(async (req, res, next) => {
+  const businessId = String(req.query.businessId || '').trim();
+  if (!businessId) {
+    return next(new ErrorResponse('businessId query parameter is required', 400));
+  }
+
+  const business = await Business.findById(businessId).select('_id name email');
+  if (!business) {
+    return next(new ErrorResponse('Business not found', 404));
+  }
+
+  const templateContext = await resolveBusinessTemplateContext({ businessId });
+  const templates = templateContext.templates
+    .filter((template) => template.hasAccess)
+    .map((template) => ({
+      id: template.id,
+      name: template.name,
+      category: template.category,
+      templateStyle: template.templateStyle,
+      isFree: template.isFree,
+      previewColor: template.previewColor
+    }));
+
+  res.status(200).json({
+    success: true,
+    data: {
+      business: {
+        id: business._id,
+        name: business.name,
+        email: business.email
+      },
+      planId: templateContext.planId,
+      templates
+    }
+  });
+});
+
+// @desc    Get partner integrations
+// @route   GET /api/v1/super-admin/partners
+// @access  Private (Super Admin)
+exports.getPartners = asyncHandler(async (req, res) => {
+  const { search, businessId, page = 1, limit = 50 } = req.query;
+  const query = {};
+
+  if (businessId) {
+    query.business = businessId;
+  }
+
+  if (req.query.isActive !== undefined) {
+    query.isActive = toBoolean(req.query.isActive, true);
+  }
+
+  const searchFilter = buildSearchFilter(search, ['name', 'description', 'keyPrefix']);
+  if (searchFilter) {
+    query.$and = query.$and || [];
+    query.$and.push(searchFilter);
+  }
+
+  const skip = (parseInt(page, 10) - 1) * parseInt(limit, 10);
+
+  const [partners, total] = await Promise.all([
+    PartnerIntegration.find(query)
+      .populate('business', 'name email isActive')
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(parseInt(limit, 10)),
+    PartnerIntegration.countDocuments(query)
+  ]);
+
+  res.status(200).json({
+    success: true,
+    count: partners.length,
+    total,
+    pages: Math.ceil(total / limit),
+    data: partners.map(mapPartnerResponse)
+  });
+});
+
+// @desc    Create partner integration
+// @route   POST /api/v1/super-admin/partners
+// @access  Private (Super Admin)
+exports.createPartner = asyncHandler(async (req, res, next) => {
+  const businessId = String(req.body.businessId || '').trim();
+  const name = String(req.body.name || '').trim();
+  const description = String(req.body.description || '').trim();
+
+  if (!businessId) {
+    return next(new ErrorResponse('businessId is required', 400));
+  }
+  if (!name) {
+    return next(new ErrorResponse('Partner integration name is required', 400));
+  }
+
+  const business = await Business.findById(businessId).select('_id name isActive');
+  if (!business) {
+    return next(new ErrorResponse('Business not found', 404));
+  }
+
+  const templateContext = await resolveBusinessTemplateContext({ businessId });
+  if (!templateContext.accessibleTemplateIds.size) {
+    return next(new ErrorResponse('No templates are available for this business', 403));
+  }
+
+  const allowAllTemplates = toBoolean(req.body.allowAllTemplates, false);
+  const templateConfig = resolvePartnerTemplateConfig({
+    templateContext,
+    allowAllTemplates,
+    providedAllowedTemplateIds: req.body.allowedTemplateIds,
+    providedDefaultTemplateId: req.body.defaultTemplateId
+  });
+
+  const rawApiKey = createPartnerApiKey();
+  const partner = await PartnerIntegration.create({
+    business: businessId,
+    name,
+    description,
+    apiKeyHash: hashApiKey(rawApiKey),
+    keyPrefix: getApiKeyPrefix(rawApiKey),
+    keyLast4: getApiKeyLast4(rawApiKey),
+    scopes: normalizePartnerScopes(req.body.scopes),
+    allowAllTemplates: templateConfig.allowAllTemplates,
+    allowedTemplateIds: templateConfig.allowedTemplateIds,
+    defaultTemplateId: templateConfig.defaultTemplateId,
+    webhookUrl: String(req.body.webhookUrl || '').trim(),
+    rateLimitPerMinute: normalizeRateLimitPerMinute(req.body.rateLimitPerMinute, 120),
+    isActive: req.body.isActive === undefined ? true : toBoolean(req.body.isActive, true),
+    createdBy: req.user.id,
+    updatedBy: req.user.id
+  });
+
+  const mapped = mapPartnerResponse(
+    await PartnerIntegration.findById(partner._id).populate('business', 'name email isActive')
+  );
+
+  res.status(201).json({
+    success: true,
+    data: mapped,
+    apiKey: rawApiKey
+  });
+});
+
+// @desc    Update partner integration
+// @route   PUT /api/v1/super-admin/partners/:id
+// @access  Private (Super Admin)
+exports.updatePartner = asyncHandler(async (req, res, next) => {
+  const partner = await PartnerIntegration.findById(req.params.id);
+  if (!partner) {
+    return next(new ErrorResponse('Partner integration not found', 404));
+  }
+
+  const targetBusinessId = String(req.body.businessId || partner.business).trim();
+  const business = await Business.findById(targetBusinessId).select('_id');
+  if (!business) {
+    return next(new ErrorResponse('Business not found', 404));
+  }
+
+  const templateContext = await resolveBusinessTemplateContext({ businessId: targetBusinessId });
+  if (!templateContext.accessibleTemplateIds.size) {
+    return next(new ErrorResponse('No templates are available for this business', 403));
+  }
+
+  const allowAllTemplates = req.body.allowAllTemplates === undefined
+    ? partner.allowAllTemplates
+    : toBoolean(req.body.allowAllTemplates, false);
+
+  const templateConfig = resolvePartnerTemplateConfig({
+    templateContext,
+    allowAllTemplates,
+    providedAllowedTemplateIds:
+      req.body.allowedTemplateIds === undefined ? partner.allowedTemplateIds : req.body.allowedTemplateIds,
+    providedDefaultTemplateId:
+      req.body.defaultTemplateId === undefined ? partner.defaultTemplateId : req.body.defaultTemplateId,
+    fallbackAllowedTemplateIds: partner.allowedTemplateIds,
+    fallbackDefaultTemplateId: partner.defaultTemplateId
+  });
+
+  partner.business = targetBusinessId;
+  if (req.body.name !== undefined) {
+    const name = String(req.body.name || '').trim();
+    if (!name) {
+      return next(new ErrorResponse('Partner integration name cannot be empty', 400));
+    }
+    partner.name = name;
+  }
+  if (req.body.description !== undefined) {
+    partner.description = String(req.body.description || '').trim();
+  }
+  if (req.body.scopes !== undefined) {
+    partner.scopes = normalizePartnerScopes(req.body.scopes, partner.scopes);
+  }
+  if (req.body.webhookUrl !== undefined) {
+    partner.webhookUrl = String(req.body.webhookUrl || '').trim();
+  }
+  if (req.body.rateLimitPerMinute !== undefined) {
+    partner.rateLimitPerMinute = normalizeRateLimitPerMinute(
+      req.body.rateLimitPerMinute,
+      partner.rateLimitPerMinute
+    );
+  }
+  if (req.body.isActive !== undefined) {
+    partner.isActive = toBoolean(req.body.isActive, true);
+  }
+
+  partner.allowAllTemplates = templateConfig.allowAllTemplates;
+  partner.allowedTemplateIds = templateConfig.allowedTemplateIds;
+  partner.defaultTemplateId = templateConfig.defaultTemplateId;
+  partner.updatedBy = req.user.id;
+
+  await partner.save();
+
+  const mapped = mapPartnerResponse(
+    await PartnerIntegration.findById(partner._id).populate('business', 'name email isActive')
+  );
+
+  res.status(200).json({
+    success: true,
+    data: mapped
+  });
+});
+
+// @desc    Rotate partner API key
+// @route   POST /api/v1/super-admin/partners/:id/rotate-key
+// @access  Private (Super Admin)
+exports.rotatePartnerKey = asyncHandler(async (req, res, next) => {
+  const partner = await PartnerIntegration.findById(req.params.id);
+  if (!partner) {
+    return next(new ErrorResponse('Partner integration not found', 404));
+  }
+
+  const rawApiKey = createPartnerApiKey();
+  partner.apiKeyHash = hashApiKey(rawApiKey);
+  partner.keyPrefix = getApiKeyPrefix(rawApiKey);
+  partner.keyLast4 = getApiKeyLast4(rawApiKey);
+  partner.lastUsedAt = null;
+  partner.updatedBy = req.user.id;
+  await partner.save();
+
+  const mapped = mapPartnerResponse(
+    await PartnerIntegration.findById(partner._id).populate('business', 'name email isActive')
+  );
+
+  res.status(200).json({
+    success: true,
+    data: mapped,
+    apiKey: rawApiKey
   });
 });

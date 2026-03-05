@@ -53,6 +53,47 @@ const maskPublicKey = (key) => {
   return `${value.slice(0, 6)}${'*'.repeat(Math.max(4, value.length - 10))}${value.slice(-4)}`;
 };
 
+const getGlobalPaystackConfig = () => {
+  const publicKey = String(process.env.PAYSTACK_PUBLIC_KEY || '').trim();
+  const secretKey = String(process.env.PAYSTACK_SECRET_KEY || '').trim();
+  return {
+    publicKey,
+    secretKey,
+    enabled: Boolean(publicKey && secretKey)
+  };
+};
+
+const runWithGlobalPaystackFallback = async (paystackConnection, operation) => {
+  try {
+    const result = await operation(paystackConnection.secretKey);
+    return {
+      result,
+      connection: paystackConnection
+    };
+  } catch (primaryError) {
+    if (paystackConnection.source !== 'business') {
+      throw primaryError;
+    }
+
+    const fallback = getGlobalPaystackConfig();
+    const canFallback = fallback.enabled && fallback.secretKey !== paystackConnection.secretKey;
+    if (!canFallback) {
+      throw primaryError;
+    }
+
+    const fallbackConnection = {
+      publicKey: fallback.publicKey,
+      secretKey: fallback.secretKey,
+      source: 'global'
+    };
+    const result = await operation(fallbackConnection.secretKey);
+    return {
+      result,
+      connection: fallbackConnection
+    };
+  }
+};
+
 const loadPublicInvoice = async (slug) => {
   if (!slug) return null;
   return Invoice.findOne({
@@ -97,11 +138,16 @@ const validateBusinessPaystackConnection = (business) => {
   }
   const enabled = Boolean(business.paystack?.enabled);
 
-  if (!enabled || !publicKey || !secretKey) {
-    throw new ErrorResponse('Online payments are not configured for this business', 400);
+  if (enabled && publicKey && secretKey) {
+    return { publicKey, secretKey, source: 'business' };
   }
 
-  return { publicKey, secretKey };
+  const fallback = getGlobalPaystackConfig();
+  if (fallback.enabled) {
+    return { publicKey: fallback.publicKey, secretKey: fallback.secretKey, source: 'global' };
+  }
+
+  throw new ErrorResponse('Online payments are not configured for this business', 400);
 };
 
 const validateVerifiedAmountAndCurrency = async (invoice, paystackData, reference) => {
@@ -247,7 +293,7 @@ const initializePublicInvoicePayment = async ({ req, invoice }) => {
   }
 
   const business = await loadBusinessWithSecret(invoice.business?._id || invoice.business);
-  const { publicKey, secretKey } = validateBusinessPaystackConnection(business);
+  let paystackConnection = validateBusinessPaystackConnection(business);
 
   const customerEmail = invoice.clientEmail || invoice.customer?.email;
   if (!customerEmail) {
@@ -273,7 +319,11 @@ const initializePublicInvoicePayment = async ({ req, invoice }) => {
     }
   };
 
-  const response = await initializeBusinessTransaction(secretKey, payload);
+  const { result: response, connection: resolvedConnection } = await runWithGlobalPaystackFallback(
+    paystackConnection,
+    (secretKey) => initializeBusinessTransaction(secretKey, payload)
+  );
+  paystackConnection = resolvedConnection;
   if (!response?.status || !response?.data) {
     throw new ErrorResponse('Unable to initialize payment', 400);
   }
@@ -292,7 +342,7 @@ const initializePublicInvoicePayment = async ({ req, invoice }) => {
     business,
     payment: {
       provider: 'paystack',
-      publicKey,
+      publicKey: paystackConnection.publicKey,
       authorizationUrl: response.data.authorization_url,
       accessCode: response.data.access_code,
       reference: response.data.reference || reference,
@@ -311,6 +361,7 @@ const buildPublicInvoicePayload = (req, invoice, businessWithSecret = null) => {
   const publicSlug = invoice?.publicSlug;
 
   const business = invoice?.business || {};
+  const globalPaystack = getGlobalPaystackConfig();
   const paystackPublicKey = businessWithSecret?.paystack?.publicKey || business?.paystack?.publicKey || '';
   const paystackEnabled = Boolean(
     businessWithSecret?.paystack?.enabled
@@ -319,6 +370,18 @@ const buildPublicInvoicePayload = (req, invoice, businessWithSecret = null) => {
   const hasPaystackSecretKey = businessWithSecret
     ? Boolean(businessWithSecret.paystack?.secretKeyEncrypted)
     : false;
+
+  const hasBusinessPaystackConfig =
+    paystackEnabled
+    && Boolean(paystackPublicKey)
+    && (businessWithSecret ? hasPaystackSecretKey : true);
+  const resolvedPublicKey = hasBusinessPaystackConfig
+    ? paystackPublicKey
+    : globalPaystack.publicKey;
+  const canPayOnline =
+    !TERMINAL_INVOICE_STATUSES.has(status)
+    && amountDue > 0
+    && (hasBusinessPaystackConfig || globalPaystack.enabled);
 
   return {
     id: invoice._id,
@@ -342,15 +405,10 @@ const buildPublicInvoicePayload = (req, invoice, businessWithSecret = null) => {
     },
     payment: {
       portalUrl: buildPublicPaymentPortalUrl(req, publicSlug),
-      canPayOnline:
-        !TERMINAL_INVOICE_STATUSES.has(status)
-        && amountDue > 0
-        && paystackEnabled
-        && Boolean(paystackPublicKey)
-        && (businessWithSecret ? hasPaystackSecretKey : true),
+      canPayOnline,
       provider: 'paystack',
-      publicKey: paystackPublicKey,
-      publicKeyMasked: maskPublicKey(paystackPublicKey),
+      publicKey: resolvedPublicKey,
+      publicKeyMasked: maskPublicKey(resolvedPublicKey),
       verifyUrl: '/api/v1/payments/verify'
     }
   };
@@ -535,10 +593,10 @@ exports.verifyPublicInvoicePayment = asyncHandler(async (req, res, next) => {
   }
 
   const business = await loadBusinessWithSecret(invoice.business?._id || invoice.business);
-  let secretKey = '';
+  let paystackConnection;
 
   try {
-    ({ secretKey } = validateBusinessPaystackConnection(business));
+    paystackConnection = validateBusinessPaystackConnection(business);
   } catch (error) {
     return respondWithInvoicePaymentError(
       req,
@@ -550,7 +608,10 @@ exports.verifyPublicInvoicePayment = asyncHandler(async (req, res, next) => {
   }
 
   try {
-    const response = await verifyBusinessTransaction(secretKey, reference);
+    const { result: response } = await runWithGlobalPaystackFallback(
+      paystackConnection,
+      (secretKey) => verifyBusinessTransaction(secretKey, reference)
+    );
     const paystackData = response?.data;
 
     if (!paystackData) {
@@ -603,16 +664,28 @@ exports.paystackInvoiceWebhook = asyncHandler(async (req, res) => {
     return res.status(200).json({ success: true, message: 'Business not found for invoice' });
   }
 
-  let secretKey = '';
+  let paystackConfig;
   try {
-    secretKey = business.getPaystackSecretKey();
+    paystackConfig = validateBusinessPaystackConnection(business);
   } catch (error) {
-    console.error('Unable to decrypt business Paystack key for webhook:', error?.message || error);
-    return res.status(500).json({ success: false, error: 'Unable to verify webhook' });
+    return res.status(200).json({ success: true, message: 'Paystack is not configured for this business' });
   }
 
   const signature = req.headers['x-paystack-signature'];
-  const isValid = verifyPaystackSignatureWithSecret(req.rawBody, signature, secretKey);
+  let isValid = verifyPaystackSignatureWithSecret(req.rawBody, signature, paystackConfig.secretKey);
+  if (!isValid && paystackConfig.source === 'business') {
+    const fallback = getGlobalPaystackConfig();
+    if (fallback.enabled && fallback.secretKey !== paystackConfig.secretKey) {
+      isValid = verifyPaystackSignatureWithSecret(req.rawBody, signature, fallback.secretKey);
+      if (isValid) {
+        paystackConfig = {
+          publicKey: fallback.publicKey,
+          secretKey: fallback.secretKey,
+          source: 'global'
+        };
+      }
+    }
+  }
   if (!isValid) {
     return res.status(401).json({ success: false, error: 'Invalid webhook signature' });
   }

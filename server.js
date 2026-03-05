@@ -68,7 +68,7 @@ const corsOptions = {
   },
   credentials: true,
   methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'Origin', 'Accept'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'Origin', 'Accept', 'X-API-Key', 'Idempotency-Key'],
   optionsSuccessStatus: 204
 };
 
@@ -122,6 +122,7 @@ const taxSettings = require('./routes/taxSettings');
 const billing = require('./routes/billing');
 const documents = require('./routes/documents');
 const webhooks = require('./routes/webhooks');
+const partner = require('./routes/partner');
 
 // Mount routers
 app.use('/api/v1/auth', auth);
@@ -143,6 +144,7 @@ app.use('/api/v1/tax-settings', taxSettings);
 app.use('/api/v1/billing', billing);
 app.use('/api/v1/documents', documents);
 app.use('/api/v1/webhooks', webhooks);
+app.use('/api/v1/partner', partner);
 
 // Health check
 app.get('/health', (req, res) => {

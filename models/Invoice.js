@@ -259,6 +259,14 @@ const InvoiceSchema = new mongoose.Schema({
     url: String,
     type: String
   }],
+  partnerIntegration: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'PartnerIntegration'
+  },
+  partnerMetadata: {
+    source: String,
+    externalReference: String
+  },
   createdBy: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User'
@@ -405,5 +413,6 @@ InvoiceSchema.index({ business: 1, dueDate: 1 });
 InvoiceSchema.index({ business: 1, 'recurring.nextInvoiceDate': 1 });
 InvoiceSchema.index({ publicSlug: 1 }, { unique: true, sparse: true });
 InvoiceSchema.index({ business: 1, transactionReference: 1 });
+InvoiceSchema.index({ business: 1, partnerIntegration: 1, createdAt: -1 });
 
 module.exports = mongoose.model('Invoice', InvoiceSchema);

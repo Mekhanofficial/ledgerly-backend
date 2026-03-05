@@ -3,18 +3,16 @@ const mongoose = require('mongoose');
 const connectDB = async () => {
   try {
     let conn;
-    
-    if (process.env.NODE_ENV === 'production') {
-      conn = await mongoose.connect(process.env.MONGODB_ATLAS_URI, {
-        useNewUrlParser: true,
-        useUnifiedTopology: true,
-      });
-    } else {
-      conn = await mongoose.connect(process.env.MONGODB_URI, {
-        useNewUrlParser: true,
-        useUnifiedTopology: true,
-      });
+
+    const resolvedMongoUri = process.env.MONGODB_URI || process.env.MONGODB_ATLAS_URI;
+    if (!resolvedMongoUri) {
+      throw new Error('MongoDB URI is not configured. Set MONGODB_URI or MONGODB_ATLAS_URI.');
     }
+
+    conn = await mongoose.connect(resolvedMongoUri, {
+      useNewUrlParser: true,
+      useUnifiedTopology: true,
+    });
     
     console.log(`MongoDB Connected: ${conn.connection.host}`);
     

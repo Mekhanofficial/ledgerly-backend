@@ -19,9 +19,9 @@ const parsePositiveInt = (value, fallback) => {
   const parsed = Number.parseInt(String(value ?? ''), 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 };
-const OTP_SEND_TIMEOUT_MS = parsePositiveInt(process.env.OTP_SEND_TIMEOUT_MS, 7000);
-const OTP_SAVE_TIMEOUT_MS = parsePositiveInt(process.env.OTP_SAVE_TIMEOUT_MS, 7000);
-const TRIAL_SETUP_TIMEOUT_MS = parsePositiveInt(process.env.TRIAL_SETUP_TIMEOUT_MS, 8000);
+const OTP_SEND_TIMEOUT_MS = parsePositiveInt(process.env.OTP_SEND_TIMEOUT_MS, 20000);
+const OTP_SAVE_TIMEOUT_MS = parsePositiveInt(process.env.OTP_SAVE_TIMEOUT_MS, 15000);
+const TRIAL_SETUP_TIMEOUT_MS = parsePositiveInt(process.env.TRIAL_SETUP_TIMEOUT_MS, 15000);
 
 const runWithTimeout = async (task, timeoutMs, timeoutMessage) => {
   const promise = Promise.resolve(task);
