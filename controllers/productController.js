@@ -18,6 +18,8 @@ exports.getProducts = asyncHandler(async (req, res, next) => {
     limit = 20
   } = req.query;
   
+  const parsedLimit = parseInt(limit, 10) || 20;
+  const parsedPage = parseInt(page, 10) || 1;
   let query = { business: req.user.business };
   
   if (search) {
@@ -35,14 +37,67 @@ exports.getProducts = asyncHandler(async (req, res, next) => {
     query['stock.available'] = { $lte: '$stock.lowStockThreshold' };
   }
   
-  const products = await Product.find(query)
+  let products = await Product.find(query)
     .populate('category', 'name')
     .populate('supplier', 'name')
     .sort({ name: 1 })
-    .skip((page - 1) * limit)
-    .limit(parseInt(limit));
+    .skip((parsedPage - 1) * parsedLimit)
+    .limit(parsedLimit);
     
-  const total = await Product.countDocuments(query);
+  let total = await Product.countDocuments(query);
+
+  // Legacy safety net: older product records may be missing the `business` field.
+  // If primary query returns nothing, attempt a scoped recovery for this user and
+  // backfill `business` so future requests use the normal path.
+  if (!products.length && req.user?.id) {
+    const legacyQuery = {
+      createdBy: req.user.id,
+      $or: [{ business: { $exists: false } }, { business: null }]
+    };
+
+    if (search) {
+      legacyQuery.$or = [
+        { business: { $exists: false } },
+        { business: null }
+      ];
+      legacyQuery.$and = [
+        {
+          $or: [
+            { name: { $regex: search, $options: 'i' } },
+            { sku: { $regex: search, $options: 'i' } },
+            { description: { $regex: search, $options: 'i' } }
+          ]
+        }
+      ];
+    }
+
+    if (category) legacyQuery.category = category;
+    if (isActive !== undefined) legacyQuery.isActive = isActive === 'true';
+    if (lowStock === 'true') {
+      legacyQuery['stock.available'] = { $lte: '$stock.lowStockThreshold' };
+    }
+
+    const legacyProducts = await Product.find(legacyQuery)
+      .populate('category', 'name')
+      .populate('supplier', 'name')
+      .sort({ name: 1 })
+      .skip((parsedPage - 1) * parsedLimit)
+      .limit(parsedLimit);
+
+    if (legacyProducts.length) {
+      const legacyIds = legacyProducts.map((item) => item._id);
+      await Product.updateMany(
+        {
+          _id: { $in: legacyIds },
+          $or: [{ business: { $exists: false } }, { business: null }]
+        },
+        { $set: { business: req.user.business } }
+      );
+
+      products = legacyProducts;
+      total = await Product.countDocuments(query);
+    }
+  }
   
   // Calculate total inventory value
   const inventoryValue = products.reduce((total, product) => {
@@ -53,7 +108,7 @@ exports.getProducts = asyncHandler(async (req, res, next) => {
     success: true,
     count: products.length,
     total,
-    pages: Math.ceil(total / limit),
+    pages: Math.ceil(total / parsedLimit),
     inventoryValue,
     data: products
   });
