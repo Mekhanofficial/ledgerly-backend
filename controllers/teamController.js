@@ -17,10 +17,6 @@ const {
 const getRequesterRole = (req) => req.user?.effectiveRole || normalizeRole(req.user?.role);
 const ADMIN_ALLOWED_ROLES = ['admin', 'accountant', 'staff', 'client', 'viewer'];
 const isProtectedAdminRole = (role) => isSuperAdmin(role) || isAdmin(role);
-const isEmailDeliveryConfigured = () =>
-  Boolean(String(process.env.BREVO_API_KEY || process.env.SENDINBLUE_API_KEY || '').trim())
-  || Boolean(String(process.env.RESEND_API_KEY || '').trim())
-  || Boolean(process.env.EMAIL_HOST && process.env.EMAIL_USER && process.env.EMAIL_PASS);
 
 const clonePermissions = (value) => JSON.parse(JSON.stringify(value || {}));
 
@@ -42,14 +38,26 @@ const logAuditEntry = async (req, action, resource, details = {}) => {
   });
 };
 
-const sendInviteEmail = async (email, name, token, inviterName, baseUrl) => {
+const sendInviteEmail = async (email, name, token, inviterName, baseUrl, businessId) => {
   const inviteUrl = `${baseUrl}/team/accept-invite/${token}`;
   const text = `${name || 'Team member'},\n\n${inviterName} has invited you to join Ledgerly.\n\nClick here to accept the invitation:\n${inviteUrl}\n\nThe link expires in 7 days.\n\nIf you did not request this, please ignore this message.`;
+  const safeName = String(name || 'Team member').trim() || 'Team member';
+  const safeInviter = String(inviterName || 'A team admin').trim() || 'A team admin';
+  const html = `
+    <p>Hi ${safeName},</p>
+    <p>${safeInviter} has invited you to join Ledgerly.</p>
+    <p>Click the link below to accept your invitation:</p>
+    <p><a href="${inviteUrl}">${inviteUrl}</a></p>
+    <p>This link expires in 7 days.</p>
+    <p>If you did not request this, please ignore this email.</p>
+  `;
 
   await sendEmail({
     to: email,
     subject: 'You are invited to Ledgerly',
-    text
+    text,
+    html,
+    businessId
   });
 
   return inviteUrl;
@@ -131,17 +139,29 @@ exports.inviteTeamMember = asyncHandler(async (req, res, next) => {
   await user.save();
 
   const baseUrl = process.env.FRONTEND_URL || process.env.REACT_APP_URL || `${req.protocol}://${req.get('host')}`;
-  const inviteUrl = await sendInviteEmail(user.email, user.name, token, req.user.name, baseUrl);
-  const emailConfigured = isEmailDeliveryConfigured();
+  let inviteUrl = `${baseUrl}/team/accept-invite/${token}`;
+  let inviteEmailSent = true;
+  let inviteEmailError = '';
+  try {
+    inviteUrl = await sendInviteEmail(user.email, user.name, token, req.user.name, baseUrl, req.user.business);
+  } catch (emailError) {
+    inviteEmailSent = false;
+    inviteEmailError = emailError?.message || 'Failed to send invitation email';
+    console.error('Failed to send team invite email:', inviteEmailError);
+  }
 
   await logAuditEntry(req, 'invite-team-member', 'User', { userId: user._id, email: user.email });
 
   res.status(201).json({
     success: true,
-    message: emailConfigured ? 'Invitation sent' : 'Invitation created',
+    message: inviteEmailSent
+      ? 'Invitation sent'
+      : 'Invitation created, but email delivery failed. Share the invite link manually.',
     data: {
       userId: user._id,
-      inviteUrl: emailConfigured ? undefined : inviteUrl
+      inviteEmailSent,
+      inviteEmailError: inviteEmailSent ? undefined : inviteEmailError,
+      inviteUrl: inviteEmailSent ? undefined : inviteUrl
     }
   });
 });
@@ -167,16 +187,28 @@ exports.resendInvitation = asyncHandler(async (req, res, next) => {
   await user.save();
 
   const baseUrl = process.env.FRONTEND_URL || process.env.REACT_APP_URL || `${req.protocol}://${req.get('host')}`;
-  const inviteUrl = await sendInviteEmail(user.email, user.name, token, req.user.name, baseUrl);
-  const emailConfigured = isEmailDeliveryConfigured();
+  let inviteUrl = `${baseUrl}/team/accept-invite/${token}`;
+  let inviteEmailSent = true;
+  let inviteEmailError = '';
+  try {
+    inviteUrl = await sendInviteEmail(user.email, user.name, token, req.user.name, baseUrl, req.user.business);
+  } catch (emailError) {
+    inviteEmailSent = false;
+    inviteEmailError = emailError?.message || 'Failed to resend invitation email';
+    console.error('Failed to resend team invite email:', inviteEmailError);
+  }
 
   await logAuditEntry(req, 'resend-invitation', 'User', { userId: user._id });
 
   res.status(200).json({
     success: true,
-    message: emailConfigured ? 'Invitation resent' : 'Invitation link generated',
+    message: inviteEmailSent
+      ? 'Invitation resent'
+      : 'Invitation link generated, but email delivery failed. Share the invite link manually.',
     data: {
-      inviteUrl: emailConfigured ? undefined : inviteUrl
+      inviteEmailSent,
+      inviteEmailError: inviteEmailSent ? undefined : inviteEmailError,
+      inviteUrl: inviteEmailSent ? undefined : inviteUrl
     }
   });
 });
