@@ -3,14 +3,6 @@ const path = require('path');
 const fs = require('fs');
 const ErrorResponse = require('../utils/errorResponse');
 
-const parsePositiveInt = (value, fallback) => {
-  const parsed = Number.parseInt(String(value ?? ''), 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
-};
-
-const MAX_DOCUMENT_FILE_SIZE_MB = parsePositiveInt(process.env.MAX_DOCUMENT_FILE_SIZE_MB, 50);
-const MAX_DOCUMENT_FILE_SIZE_BYTES = MAX_DOCUMENT_FILE_SIZE_MB * 1024 * 1024;
-
 // Ensure upload directories exist
 const directories = [
   'uploads/logos',
@@ -69,7 +61,6 @@ function checkFileType(file, cb) {
 // Init upload
 const upload = multer({
   storage: storage,
-  limits: { fileSize: MAX_DOCUMENT_FILE_SIZE_BYTES },
   fileFilter: function (req, file, cb) {
     checkFileType(file, cb);
   }

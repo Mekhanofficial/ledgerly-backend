@@ -41,6 +41,7 @@ const startTrialForUser = async ({ user, business }) => {
       ...(business.subscription || {}),
       plan: TRIAL_PLAN,
       status: 'trial',
+      billingCycle: 'monthly',
       currentPeriodEnd: trialEndsAt,
       trialEndsAt
     };
@@ -120,10 +121,20 @@ const syncBusinessFromUser = async (user) => {
   if (!business) return null;
   const plan = normalizePlanId(user.plan || business.subscription?.plan || 'starter');
   const status = user.subscriptionStatus || business.subscription?.status || 'active';
+  let billingCycle = business.subscription?.billingCycle;
+  if (!billingCycle) {
+    const latestSubscription = await Subscription.findOne({ business: user.business })
+      .sort({ createdAt: -1 })
+      .select('billingCycle')
+      .lean();
+    billingCycle = latestSubscription?.billingCycle;
+  }
+  billingCycle = billingCycle === 'yearly' ? 'yearly' : 'monthly';
   business.subscription = {
     ...(business.subscription || {}),
     plan,
     status,
+    billingCycle,
     currentPeriodEnd: user.subscriptionEndsAt,
     trialEndsAt: user.trialEndsAt
   };
@@ -199,6 +210,7 @@ const syncTrialPeriods = async () => {
           filter: { _id: sub.business },
           update: {
             $set: {
+              'subscription.billingCycle': 'monthly',
               'subscription.currentPeriodEnd': expectedEnd,
               'subscription.trialEndsAt': expectedEnd,
               'subscription.status': 'trial'
@@ -290,6 +302,7 @@ const updateSubscriptionFromPayment = async ({
       ...(business.subscription || {}),
       plan: normalizedPlan,
       status: 'active',
+      billingCycle,
       currentPeriodEnd: subscriptionEndsAt,
       trialEndsAt: null
     };

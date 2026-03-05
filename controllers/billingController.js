@@ -38,7 +38,9 @@ exports.getBillingSummary = asyncHandler(async (req, res) => {
 
   const fallbackPlan = business?.subscription?.plan || billingOwner?.plan || 'starter';
   const planId = billingOwner ? resolveEffectivePlan(billingOwner) : normalizePlanId(subscription?.plan || fallbackPlan);
-  const billingCycle = subscription?.billingCycle || 'monthly';
+  const billingCycle = subscription?.billingCycle
+    || business?.subscription?.billingCycle
+    || 'monthly';
   const status = billingOwner?.subscriptionStatus || subscription?.status || business?.subscription?.status || 'active';
   const subscriptionStart = subscription?.subscriptionStart || null;
   const subscriptionEnd = billingOwner?.subscriptionEndsAt || subscription?.subscriptionEnd || business?.subscription?.currentPeriodEnd || null;

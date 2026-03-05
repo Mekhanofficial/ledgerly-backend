@@ -1,4 +1,5 @@
 const Business = require('../models/Business');
+const Subscription = require('../models/Subscription');
 const AuditLog = require('../models/AuditLog');
 const ErrorResponse = require('../utils/errorResponse');
 const asyncHandler = require('../utils/asyncHandler');
@@ -22,6 +23,19 @@ exports.getBusinessProfile = asyncHandler(async (req, res, next) => {
 
   if (!business) {
     return next(new ErrorResponse('Business not found', 404));
+  }
+
+  if (!business.subscription?.billingCycle) {
+    const latestSubscription = await Subscription.findOne({ business: business._id })
+      .sort({ createdAt: -1 })
+      .select('billingCycle')
+      .lean();
+    const inferredCycle = latestSubscription?.billingCycle === 'yearly' ? 'yearly' : 'monthly';
+    business.subscription = {
+      ...(business.subscription || {}),
+      billingCycle: inferredCycle
+    };
+    await business.save();
   }
 
   res.status(200).json({

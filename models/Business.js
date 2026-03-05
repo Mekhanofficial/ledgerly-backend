@@ -169,6 +169,11 @@ const BusinessSchema = new mongoose.Schema({
       enum: ['trial', 'active', 'expired', 'past_due', 'canceled', 'incomplete'],
       default: 'active'
     },
+    billingCycle: {
+      type: String,
+      enum: ['monthly', 'yearly'],
+      default: 'monthly'
+    },
     currentPeriodEnd: Date,
     trialEndsAt: Date,
     stripeCustomerId: String,

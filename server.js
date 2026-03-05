@@ -18,15 +18,16 @@ dotenv.config();
 connectDB();
 
 const app = express();
+const REQUEST_BODY_LIMIT = process.env.REQUEST_BODY_LIMIT || '250mb';
 
 // Body parser (capture raw body for webhook verification)
 app.use(express.json({
-  limit: '50mb',
+  limit: REQUEST_BODY_LIMIT,
   verify: (req, res, buf) => {
     req.rawBody = buf;
   }
 }));
-app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: REQUEST_BODY_LIMIT }));
 
 // Enable CORS
 const envOrigins = process.env.CORS_ORIGIN

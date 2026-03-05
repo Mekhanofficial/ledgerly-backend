@@ -1,8 +1,10 @@
 const Customer = require('../models/Customer');
 const Invoice = require('../models/Invoice');
 const Payment = require('../models/Payment');
+const Business = require('../models/Business');
 const ErrorResponse = require('../utils/errorResponse');
 const asyncHandler = require('../utils/asyncHandler');
+const sendEmail = require('../utils/email');
 const {
   normalizeRole,
   isStaff,
@@ -12,6 +14,40 @@ const {
 } = require('../utils/rolePermissions');
 
 const getEffectiveRole = (req) => req.user?.effectiveRole || normalizeRole(req.user?.role);
+
+const escapeHtml = (value) =>
+  String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+
+const formatCurrency = (value, currency = 'USD') => {
+  const amount = Number(value) || 0;
+  try {
+    return new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency: String(currency || 'USD').toUpperCase(),
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2
+    }).format(amount);
+  } catch (error) {
+    return `${String(currency || 'USD').toUpperCase()} ${amount.toFixed(2)}`;
+  }
+};
+
+const formatDate = (value) => {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '-';
+  return date.toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric'
+  });
+};
+
+const normalizeInvoiceStatus = (status) => String(status || '').trim().toLowerCase();
 
 // @desc    Get all customers
 // @route   GET /api/v1/customers
@@ -243,6 +279,187 @@ exports.getCustomerHistory = asyncHandler(async (req, res, next) => {
         outstandingBalance: customer.outstandingBalance,
         totalInvoices: invoices.length,
         totalPayments: payments.length
+      }
+    }
+  });
+});
+
+// @desc    Send customer statement email
+// @route   POST /api/v1/customers/:id/send-statement
+// @access  Private
+exports.sendCustomerStatement = asyncHandler(async (req, res, next) => {
+  const customer = await Customer.findOne({
+    _id: req.params.id,
+    business: req.user.business
+  });
+
+  if (!customer) {
+    return next(new ErrorResponse(`Customer not found with id ${req.params.id}`, 404));
+  }
+
+  const effectiveRole = getEffectiveRole(req);
+  if (isClient(effectiveRole)) {
+    return next(new ErrorResponse('Not authorized to send customer statements', 403));
+  }
+  if (
+    isStaff(effectiveRole) &&
+    customer.assignedTo?.toString() !== req.user.id &&
+    customer.createdBy?.toString() !== req.user.id
+  ) {
+    return next(new ErrorResponse('Not authorized to send statement for this customer', 403));
+  }
+
+  if (!customer.email) {
+    return next(new ErrorResponse('Customer does not have an email address', 400));
+  }
+
+  const business = await Business.findById(req.user.business)
+    .select('name currency email phone')
+    .lean();
+
+  const invoices = await Invoice.find({
+    business: req.user.business,
+    customer: customer._id,
+    status: { $nin: ['void', 'cancelled'] }
+  })
+    .select('invoiceNumber date dueDate total amountPaid balance status currency')
+    .sort({ date: -1 })
+    .lean();
+
+  const currency = String(
+    customer.currency
+    || invoices.find((invoice) => invoice.currency)?.currency
+    || business?.currency
+    || 'USD'
+  ).toUpperCase();
+
+  const openStatuses = new Set(['sent', 'viewed', 'partial', 'overdue']);
+  const now = new Date();
+
+  const openInvoices = invoices.filter((invoice) => {
+    const status = normalizeInvoiceStatus(invoice.status);
+    const balance = Number(invoice.balance) || 0;
+    return openStatuses.has(status) && balance > 0;
+  });
+
+  const overdueInvoices = openInvoices.filter((invoice) => {
+    const status = normalizeInvoiceStatus(invoice.status);
+    if (status === 'overdue') return true;
+    const dueDate = new Date(invoice.dueDate);
+    return !Number.isNaN(dueDate.getTime()) && dueDate < now;
+  });
+
+  const totalInvoiced = invoices.reduce((sum, invoice) => sum + (Number(invoice.total) || 0), 0);
+  const totalPaid = invoices.reduce((sum, invoice) => sum + (Number(invoice.amountPaid) || 0), 0);
+  const outstandingAmount = openInvoices.reduce((sum, invoice) => sum + (Number(invoice.balance) || 0), 0);
+
+  const statementLines = openInvoices
+    .slice()
+    .sort((a, b) => {
+      const dueA = new Date(a.dueDate).getTime() || 0;
+      const dueB = new Date(b.dueDate).getTime() || 0;
+      return dueA - dueB;
+    })
+    .slice(0, 20);
+
+  const businessName = escapeHtml(business?.name || 'Ledgerly');
+  const customerName = escapeHtml(customer.name || 'Customer');
+  const generatedAt = formatDate(new Date());
+
+  const summaryRowsHtml = `
+    <tr><td style="padding:8px;border:1px solid #e5e7eb;">Total Invoiced</td><td style="padding:8px;border:1px solid #e5e7eb;font-weight:600;">${escapeHtml(formatCurrency(totalInvoiced, currency))}</td></tr>
+    <tr><td style="padding:8px;border:1px solid #e5e7eb;">Total Paid</td><td style="padding:8px;border:1px solid #e5e7eb;font-weight:600;">${escapeHtml(formatCurrency(totalPaid, currency))}</td></tr>
+    <tr><td style="padding:8px;border:1px solid #e5e7eb;">Outstanding Amount</td><td style="padding:8px;border:1px solid #e5e7eb;font-weight:700;color:#b91c1c;">${escapeHtml(formatCurrency(outstandingAmount, currency))}</td></tr>
+    <tr><td style="padding:8px;border:1px solid #e5e7eb;">Open Invoices</td><td style="padding:8px;border:1px solid #e5e7eb;">${openInvoices.length}</td></tr>
+    <tr><td style="padding:8px;border:1px solid #e5e7eb;">Overdue Invoices</td><td style="padding:8px;border:1px solid #e5e7eb;color:${overdueInvoices.length > 0 ? '#b91c1c' : '#166534'};font-weight:600;">${overdueInvoices.length}</td></tr>
+  `;
+
+  const statementTableHtml = statementLines.length
+    ? `
+      <table style="width:100%;border-collapse:collapse;margin-top:16px;">
+        <thead>
+          <tr style="background:#f8fafc;">
+            <th style="text-align:left;padding:8px;border:1px solid #e5e7eb;">Invoice #</th>
+            <th style="text-align:left;padding:8px;border:1px solid #e5e7eb;">Date</th>
+            <th style="text-align:left;padding:8px;border:1px solid #e5e7eb;">Due Date</th>
+            <th style="text-align:left;padding:8px;border:1px solid #e5e7eb;">Status</th>
+            <th style="text-align:right;padding:8px;border:1px solid #e5e7eb;">Balance</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${statementLines.map((invoice) => {
+            const status = normalizeInvoiceStatus(invoice.status);
+            const isOverdue = status === 'overdue' || (new Date(invoice.dueDate).getTime() < now.getTime());
+            return `
+              <tr>
+                <td style="padding:8px;border:1px solid #e5e7eb;">${escapeHtml(invoice.invoiceNumber || '-')}</td>
+                <td style="padding:8px;border:1px solid #e5e7eb;">${escapeHtml(formatDate(invoice.date))}</td>
+                <td style="padding:8px;border:1px solid #e5e7eb;">${escapeHtml(formatDate(invoice.dueDate))}</td>
+                <td style="padding:8px;border:1px solid #e5e7eb;color:${isOverdue ? '#b91c1c' : '#334155'};text-transform:capitalize;">${escapeHtml(status || '-')}</td>
+                <td style="padding:8px;border:1px solid #e5e7eb;text-align:right;font-weight:600;">${escapeHtml(formatCurrency(invoice.balance, currency))}</td>
+              </tr>
+            `;
+          }).join('')}
+        </tbody>
+      </table>
+    `
+    : '<p style="margin-top:16px;">There are no open invoices at this time.</p>';
+
+  const html = `
+    <div style="font-family:Arial,sans-serif;color:#0f172a;line-height:1.5;">
+      <h2 style="margin-bottom:8px;">Statement of Account</h2>
+      <p>Hi ${customerName},</p>
+      <p>Please find your account statement from <strong>${businessName}</strong> as of <strong>${escapeHtml(generatedAt)}</strong>.</p>
+      <table style="width:100%;border-collapse:collapse;margin-top:12px;">
+        ${summaryRowsHtml}
+      </table>
+      ${statementTableHtml}
+      <p style="margin-top:18px;">If you've already made payment, please disregard this email.</p>
+      <p>Regards,<br/>${businessName}</p>
+    </div>
+  `;
+
+  const text = [
+    `Statement of Account - ${business?.name || 'Ledgerly'}`,
+    `Customer: ${customer.name || 'Customer'}`,
+    `Date: ${generatedAt}`,
+    '',
+    `Total Invoiced: ${formatCurrency(totalInvoiced, currency)}`,
+    `Total Paid: ${formatCurrency(totalPaid, currency)}`,
+    `Outstanding Amount: ${formatCurrency(outstandingAmount, currency)}`,
+    `Open Invoices: ${openInvoices.length}`,
+    `Overdue Invoices: ${overdueInvoices.length}`,
+    '',
+    statementLines.length
+      ? 'Open Invoices:'
+      : 'There are no open invoices at this time.',
+    ...statementLines.map((invoice) =>
+      `- ${invoice.invoiceNumber || '-'} | Due ${formatDate(invoice.dueDate)} | ${formatCurrency(invoice.balance, currency)} | ${normalizeInvoiceStatus(invoice.status) || '-'}`
+    )
+  ].join('\n');
+
+  await sendEmail({
+    to: customer.email,
+    subject: `Statement of Account - ${business?.name || 'Ledgerly'}`,
+    text,
+    html,
+    businessId: req.user.business
+  });
+
+  res.status(200).json({
+    success: true,
+    message: 'Customer statement sent successfully',
+    data: {
+      customerId: customer._id,
+      customerName: customer.name,
+      email: customer.email,
+      summary: {
+        totalInvoiced,
+        totalPaid,
+        outstandingAmount,
+        openInvoices: openInvoices.length,
+        overdueInvoices: overdueInvoices.length,
+        currency
       }
     }
   });

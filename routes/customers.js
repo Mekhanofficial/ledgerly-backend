@@ -7,6 +7,7 @@ const {
   updateCustomer,
   deleteCustomer,
   getCustomerHistory,
+  sendCustomerStatement,
   importCustomers
 } = require('../controllers/customerController');
 const { protect, authorize } = require('../middleware/auth');
@@ -23,6 +24,7 @@ router.route('/:id')
   .delete(authorize('admin'), deleteCustomer);
 
 router.get('/:id/history', authorize('admin', 'accountant', 'staff'), getCustomerHistory);
+router.post('/:id/send-statement', authorize('admin', 'accountant', 'staff'), sendCustomerStatement);
 router.post('/import', authorize('admin'), importCustomers);
 
 module.exports = router;

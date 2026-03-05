@@ -18,21 +18,18 @@ const DOCUMENT_RULES = {
   starter: {
     maxDocuments: parsePositiveInt(process.env.STARTER_MAX_DOCUMENTS, 50),
     maxStorageBytes: parsePositiveInt(process.env.STARTER_MAX_STORAGE_BYTES, 250 * MB),
-    maxFileSizeBytes: parsePositiveInt(process.env.STARTER_MAX_FILE_BYTES, 5 * MB),
     allowedExtensions: new Set(['pdf', 'jpg', 'jpeg', 'png']),
     allowImages: true,
   },
   professional: {
     maxDocuments: parsePositiveInt(process.env.PROFESSIONAL_MAX_DOCUMENTS, 1000),
     maxStorageBytes: parsePositiveInt(process.env.PROFESSIONAL_MAX_STORAGE_BYTES, 5 * GB),
-    maxFileSizeBytes: parsePositiveInt(process.env.PROFESSIONAL_MAX_FILE_BYTES, 15 * MB),
     allowedExtensions: new Set(['pdf', 'docx', 'xlsx', 'csv', 'jpg', 'jpeg', 'png', 'webp', 'gif']),
     allowImages: true,
   },
   enterprise: {
     maxDocuments: parsePositiveInt(process.env.ENTERPRISE_MAX_DOCUMENTS, 10000),
     maxStorageBytes: parsePositiveInt(process.env.ENTERPRISE_MAX_STORAGE_BYTES, 50 * GB),
-    maxFileSizeBytes: parsePositiveInt(process.env.ENTERPRISE_MAX_FILE_BYTES, 50 * MB),
     allowedExtensions: new Set(['pdf', 'doc', 'docx', 'xls', 'xlsx', 'csv', 'txt', 'ppt', 'pptx', 'jpg', 'jpeg', 'png', 'webp', 'gif']),
     allowImages: true,
   },
@@ -136,16 +133,6 @@ exports.uploadDocument = asyncHandler(async (req, res, next) => {
   const originalName = req.file.originalname || '';
   const extension = path.extname(originalName).replace('.', '').toLowerCase();
   const fileSize = Number(req.file.size) || 0;
-
-  if (fileSize > documentRules.maxFileSizeBytes) {
-    removeFile(req.file.path);
-    return next(
-      new ErrorResponse(
-        `File too large for your plan. Maximum allowed size is ${Math.round(documentRules.maxFileSizeBytes / MB)}MB.`,
-        413
-      )
-    );
-  }
 
   if (!isDocumentTypeAllowed(documentRules, req.file.mimetype, extension)) {
     removeFile(req.file.path);
