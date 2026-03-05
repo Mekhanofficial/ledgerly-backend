@@ -80,6 +80,12 @@ const toBase64Content = (value) => {
 const resolvePreferredProvider = () =>
   sanitizeText(process.env.EMAIL_DELIVERY_PROVIDER || process.env.EMAIL_PROVIDER).toLowerCase();
 
+const isBrevoSmtpKey = (value) =>
+  String(value || '')
+    .trim()
+    .toLowerCase()
+    .startsWith('xsmtpsib-');
+
 const getResendConfig = (defaultFrom = '') => {
   const apiKey = sanitizeText(process.env.RESEND_API_KEY);
   if (!apiKey) {
@@ -134,6 +140,7 @@ const getBrevoConfig = (defaultFrom = '') => {
 
   return {
     apiKey,
+    apiKeyLooksLikeSmtp: isBrevoSmtpKey(apiKey),
     apiBaseUrl: sanitizeText(process.env.BREVO_API_BASE_URL) || 'https://api.brevo.com/v3',
     sender
   };
@@ -255,6 +262,12 @@ const sendViaResend = async ({ resendConfig, message, defaultFrom }) => {
 };
 
 const sendViaBrevo = async ({ brevoConfig, message, defaultFrom }) => {
+  if (brevoConfig?.apiKeyLooksLikeSmtp) {
+    throw new Error(
+      'BREVO_API_KEY looks like an SMTP key (xsmtpsib-...). Use a Brevo API key (xkeysib-...) for EMAIL_DELIVERY_PROVIDER=brevo.'
+    );
+  }
+
   const recipients = toRecipientList(message?.to).map((email) => ({ email }));
   if (!recipients.length) {
     throw new Error('No recipient email address provided');
@@ -667,6 +680,12 @@ const sendEmail = async (options) => {
   const resendConfig = getResendConfig(defaultEmailConfig.from);
   const businessTransport = await getBusinessTransport(options?.businessId);
   const defaultTransporter = getTransporter();
+
+  if (prefersBrevo && brevoConfig?.apiKeyLooksLikeSmtp) {
+    throw new Error(
+      'BREVO_API_KEY looks like an SMTP key (xsmtpsib-...). Use a Brevo API key (xkeysib-...) for EMAIL_DELIVERY_PROVIDER=brevo.'
+    );
+  }
 
   const message = {
     from: options.from || businessTransport?.from || defaultEmailConfig.from,

@@ -191,13 +191,16 @@ const server = app.listen(PORT, () => {
     || '';
   console.log('Deployment version:', commit ? commit.slice(0, 12) : 'unknown');
   const emailConfig = getEmailConfig();
+  const brevoKey = String(process.env.BREVO_API_KEY || process.env.SENDINBLUE_API_KEY || '').trim();
   const brevoConfigured = Boolean(
-    String(process.env.BREVO_API_KEY || process.env.SENDINBLUE_API_KEY || '').trim()
+    brevoKey
   );
+  const brevoApiKeyLooksLikeSmtp = brevoKey.toLowerCase().startsWith('xsmtpsib-');
   const resendConfigured = Boolean(String(process.env.RESEND_API_KEY || '').trim());
   console.log('Email transport status:', {
     configured: isEmailConfigured(),
     brevoConfigured,
+    brevoApiKeyLooksLikeSmtp,
     resendConfigured,
     deliveryConfigured: isEmailConfigured() || brevoConfigured || resendConfigured,
     host: emailConfig.host || '',
@@ -210,6 +213,11 @@ const server = app.listen(PORT, () => {
     user: maskEmail(emailConfig.user),
     from: emailConfig.from
   });
+  if (brevoApiKeyLooksLikeSmtp) {
+    console.warn(
+      'EMAIL_DELIVERY_PROVIDER=brevo expects a Brevo API key (xkeysib-...). Current BREVO_API_KEY looks like SMTP key (xsmtpsib-...).'
+    );
+  }
 });
 
 // Monthly invoice count reset (runs daily)
