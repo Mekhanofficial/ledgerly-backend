@@ -69,7 +69,7 @@ const issueAndSendEmailVerificationOtp = async (user) => {
 // @route   POST /api/v1/auth/register
 // @access  Public
 exports.register = asyncHandler(async (req, res, next) => {
-  const { name, email, password, phone, businessName, currency, currencyCode } = req.body;
+  const { name, email, password, phone, businessName, currency, currencyCode, country } = req.body;
   const normalizedEmail = normalizeEmail(email);
 
   // Check if user exists
@@ -105,14 +105,22 @@ exports.register = asyncHandler(async (req, res, next) => {
 
   // Create business
   const resolvedCurrency = (currencyCode || currency || 'USD').toString().trim().toUpperCase();
-
-  const business = await Business.create({
+  const resolvedCountry = String(country || '').trim();
+  const businessPayload = {
     name: businessName,
     email: normalizedEmail,
     phone,
     currency: resolvedCurrency,
     owner: null // Will be updated after user creation
-  });
+  };
+
+  if (resolvedCountry) {
+    businessPayload.address = {
+      country: resolvedCountry
+    };
+  }
+
+  const business = await Business.create(businessPayload);
 
   // Create user
   const user = await User.create({
