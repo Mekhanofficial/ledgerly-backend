@@ -50,9 +50,11 @@ exports.getProducts = asyncHandler(async (req, res, next) => {
   let products = await Product.find(query)
     .populate('category', 'name')
     .populate('supplier', 'name')
-    .sort({ name: 1 })
+    // Use indexed _id sort to avoid Mongo in-memory sort failures on large product docs.
+    .sort({ _id: -1 })
     .skip((parsedPage - 1) * parsedLimit)
-    .limit(parsedLimit);
+    .limit(parsedLimit)
+    .lean();
     
   let total = await Product.countDocuments(query);
 
@@ -120,9 +122,10 @@ exports.getProducts = asyncHandler(async (req, res, next) => {
         products = await Product.find(query)
           .populate('category', 'name')
           .populate('supplier', 'name')
-          .sort({ name: 1 })
+          .sort({ _id: -1 })
           .skip((parsedPage - 1) * parsedLimit)
-          .limit(parsedLimit);
+          .limit(parsedLimit)
+          .lean();
 
         total = await Product.countDocuments(query);
       }
