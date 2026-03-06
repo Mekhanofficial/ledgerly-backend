@@ -273,6 +273,35 @@ const buildInvoiceEmailHtml = ({ invoice, context, message, templateMeta }) => {
   `;
 };
 
+const toFiniteNumber = (value, fallback = 0) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+};
+
+const resolveEffectiveAvailableStock = (product = {}) => {
+  const stock = product?.stock || {};
+  const quantity = Math.max(0, toFiniteNumber(stock.quantity, 0));
+  const reserved = Math.max(0, toFiniteNumber(stock.reserved, 0));
+  const explicitAvailable = toFiniteNumber(stock.available, Number.NaN);
+
+  if (Number.isFinite(explicitAvailable) && explicitAvailable > 0) {
+    return explicitAvailable;
+  }
+
+  const computed = Math.max(0, quantity - reserved);
+
+  // Compatibility for legacy rows where available stayed at 0 after quantity updates.
+  if (Number.isFinite(explicitAvailable) && explicitAvailable === 0 && quantity > 0 && reserved <= 0) {
+    return quantity;
+  }
+
+  if (Number.isFinite(explicitAvailable) && explicitAvailable >= 0) {
+    return explicitAvailable;
+  }
+
+  return computed;
+};
+
 const resolveOverrideInput = (payload = {}) => {
   const overrideRate = hasValue(payload.taxRateUsed)
     ? payload.taxRateUsed
@@ -532,10 +561,13 @@ exports.createInvoice = asyncHandler(async (req, res, next) => {
         const product = await Product.findById(item.product);
         
         if (product && product.trackInventory) {
+          const requestedQty = Math.max(0, toFiniteNumber(item.quantity, 0));
+          const availableStock = resolveEffectiveAvailableStock(product);
+
           // Check stock availability
-          if (product.stock.available < item.quantity) {
+          if (availableStock < requestedQty) {
             return next(new ErrorResponse(
-              `Insufficient stock for ${product.name}. Available: ${product.stock.available}`,
+              `Insufficient stock for ${product.name}. Available: ${availableStock}`,
               400
             ));
           }
@@ -643,8 +675,13 @@ exports.createInvoice = asyncHandler(async (req, res, next) => {
         const product = await Product.findById(item.product);
         
         if (product && product.trackInventory) {
+          const requestedQty = Math.max(0, toFiniteNumber(item.quantity, 0));
+          const effectiveAvailable = resolveEffectiveAvailableStock(product);
+          // Keep stale available values synchronized before applying reservation deltas.
+          product.stock.available = effectiveAvailable;
+
           // Reserve stock
-          product.stock.reserved += item.quantity;
+          product.stock.reserved += requestedQty;
           product.stock.available = product.stock.quantity - product.stock.reserved;
           await product.save();
 
@@ -653,7 +690,7 @@ exports.createInvoice = asyncHandler(async (req, res, next) => {
             business: req.user.business,
             product: item.product,
             type: 'sale_reserved',
-            quantity: -item.quantity,
+            quantity: -requestedQty,
             reference: `Invoice: ${invoice.invoiceNumber}`,
             createdBy: req.user.id
           });

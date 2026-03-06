@@ -5,6 +5,40 @@ const InventoryTransaction = require('../models/InventoryTransaction');
 const ErrorResponse = require('../utils/errorResponse');
 const asyncHandler = require('../utils/asyncHandler');
 
+const toStockNumber = (value, fallback = 0) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+};
+
+const normalizeStockPayload = (incomingStock = {}, currentStock = {}) => {
+  const normalizedCurrent = currentStock && typeof currentStock === 'object' ? currentStock : {};
+  const normalizedIncoming = incomingStock && typeof incomingStock === 'object' ? incomingStock : {};
+
+  const quantity = Math.max(
+    0,
+    toStockNumber(
+      normalizedIncoming.quantity,
+      toStockNumber(normalizedCurrent.quantity, 0)
+    )
+  );
+  const reservedRaw = Math.max(
+    0,
+    toStockNumber(
+      normalizedIncoming.reserved,
+      toStockNumber(normalizedCurrent.reserved, 0)
+    )
+  );
+  const reserved = Math.min(reservedRaw, quantity);
+
+  return {
+    ...normalizedCurrent,
+    ...normalizedIncoming,
+    quantity,
+    reserved,
+    available: Math.max(0, quantity - reserved)
+  };
+};
+
 // @desc    Get all products
 // @route   GET /api/v1/products
 // @access  Private
@@ -261,6 +295,11 @@ exports.updateProduct = asyncHandler(async (req, res, next) => {
   const previousSupplier = product.supplier ? product.supplier.toString() : null;
 
   req.body.updatedBy = req.user.id;
+
+  if (req.body.stock && typeof req.body.stock === 'object') {
+    const currentStock = product?.stock?.toObject ? product.stock.toObject() : (product.stock || {});
+    req.body.stock = normalizeStockPayload(req.body.stock, currentStock);
+  }
 
   product = await Product.findByIdAndUpdate(req.params.id, req.body, {
     new: true,
