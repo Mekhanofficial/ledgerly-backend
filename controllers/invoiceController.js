@@ -273,6 +273,45 @@ const buildInvoiceEmailHtml = ({ invoice, context, message, templateMeta }) => {
   `;
 };
 
+const buildReceiptEmailHtml = ({ context, templateMeta }) => {
+  const colors = templateMeta?.colors || {};
+  const primary = resolveCssColor(colors.primary, '#2563eb');
+  const secondary = resolveCssColor(colors.secondary, '#3b82f6');
+  const accent = resolveCssColor(colors.accent, '#eff6ff');
+  const text = resolveCssColor(colors.text, '#1f2937');
+  const templateName = templateMeta?.name || 'Standard';
+
+  return `
+    <div style="margin:0;padding:24px;background:#f8fafc;font-family:Arial,sans-serif;">
+      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="max-width:640px;margin:0 auto;background:#fff;border:1px solid #e2e8f0;border-radius:10px;overflow:hidden;">
+        <tr>
+          <td style="padding:20px;background:linear-gradient(90deg, ${primary} 0%, ${secondary} 100%);">
+            <div style="font-size:22px;font-weight:700;color:#fff;">${escapeHtml(context.businessName)}</div>
+            <div style="font-size:12px;color:#dbeafe;margin-top:6px;">Receipt Template: ${escapeHtml(templateName)}</div>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:20px;">
+            <p style="margin:0 0 10px 0;color:#334155;line-height:1.6;">Dear ${escapeHtml(context.customerName)},</p>
+            <p style="margin:0;color:#334155;line-height:1.6;">Thank you for your payment. Your receipt details are below.</p>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:0 20px 20px 20px;">
+            <div style="border:1px solid #dbeafe;background:${accent};border-radius:8px;padding:14px;">
+              <div style="font-size:13px;color:${text};margin-bottom:6px;"><strong>Receipt:</strong> ${escapeHtml(context.receiptNumber)}</div>
+              <div style="font-size:13px;color:${text};margin-bottom:6px;"><strong>Invoice:</strong> ${escapeHtml(context.invoiceNumber)}</div>
+              <div style="font-size:13px;color:${text};margin-bottom:6px;"><strong>Payment Date:</strong> ${escapeHtml(context.paymentDate)}</div>
+              <div style="font-size:13px;color:${text};margin-bottom:6px;"><strong>Payment Method:</strong> ${escapeHtml(context.paymentMethod)}</div>
+              <div style="font-size:13px;color:${text};"><strong>Amount Paid:</strong> ${escapeHtml(context.amountPaid)} ${escapeHtml(context.currency)}</div>
+            </div>
+          </td>
+        </tr>
+      </table>
+    </div>
+  `;
+};
+
 const toFiniteNumber = (value, fallback = 0) => {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
@@ -1212,6 +1251,10 @@ exports.recordPayment = asyncHandler(async (req, res, next) => {
       return next(new ErrorResponse('Business not found for receipt generation', 404));
     }
 
+    const resolvedReceiptTemplateStyle = resolveCanonicalTemplateStyle(
+      templateStyle || req.body.templateId || req.body.template || invoice.templateStyle || 'standard',
+      invoice.templateStyle || 'standard'
+    );
     const receipt = await Receipt.create({
       business: req.user.business,
       invoice: invoice._id,
@@ -1227,7 +1270,7 @@ exports.recordPayment = asyncHandler(async (req, res, next) => {
       total: invoice.total,
       amountPaid: invoice.amountPaid,
       paymentMethod,
-      templateStyle: templateStyle || req.body.templateId || req.body.template,
+      templateStyle: resolvedReceiptTemplateStyle,
       createdBy: req.user.id
     });
 
@@ -1266,11 +1309,23 @@ exports.recordPayment = asyncHandler(async (req, res, next) => {
       ...receipt.toObject(),
       business,
       customer: receiptCustomer,
+      templateStyle: resolvedReceiptTemplateStyle,
       invoice: {
         _id: invoice._id,
         invoiceNumber: invoice.invoiceNumber,
         currency: invoice.currency
       }
+    };
+    const receiptTemplateMeta = resolveInvoiceTemplateMeta(resolvedReceiptTemplateStyle);
+    const receiptMailContext = {
+      customerName: invoice.customer?.name || 'Customer',
+      businessName: invoice.business?.name || 'Business',
+      receiptNumber: receipt.receiptNumber,
+      invoiceNumber: invoice.invoiceNumber,
+      paymentDate: new Date().toLocaleDateString(),
+      amountPaid: amount.toFixed(2),
+      paymentMethod,
+      currency: invoice.currency || 'USD'
     };
     const defaultReceiptAttachmentFileName = sanitizeAttachmentFileName(`receipt-${receipt.receiptNumber}.pdf`);
     const frontendReceiptAttachment = resolveFrontendPdfAttachment(
@@ -1286,16 +1341,11 @@ exports.recordPayment = asyncHandler(async (req, res, next) => {
           businessId: req.user.business,
           to: invoice.customer.email,
           subject: `Receipt for Invoice ${invoice.invoiceNumber}`,
-          template: 'receipt',
-          context: {
-            customerName: invoice.customer?.name || 'Customer',
-            businessName: invoice.business?.name || 'Business',
-            receiptNumber: receipt.receiptNumber,
-            invoiceNumber: invoice.invoiceNumber,
-            paymentDate: new Date().toLocaleDateString(),
-            amountPaid: amount.toFixed(2),
-            paymentMethod
-          },
+          text: `Receipt ${receipt.receiptNumber} for invoice ${invoice.invoiceNumber}. Amount paid: ${amount.toFixed(2)} ${invoice.currency || 'USD'}.`,
+          html: buildReceiptEmailHtml({
+            context: receiptMailContext,
+            templateMeta: receiptTemplateMeta
+          }),
           attachments: [{
             filename: receiptAttachmentFileName,
             content: receiptPDF,

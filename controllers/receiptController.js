@@ -10,6 +10,118 @@ const sendEmail = require('../utils/email');
 const generatePDF = require('../utils/generatePDF');
 const { calculateInvoiceTotals, toNumber } = require('../utils/invoiceCalculator');
 const { getTaxSettings } = require('../utils/taxSettings');
+const invoiceTemplates = require('../data/templates');
+
+const escapeHtml = (value) =>
+  String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+
+const normalizeTemplateStyle = (value) => String(value || '').trim();
+
+const TEMPLATE_STYLE_ALIASES = {
+  modern: 'modernCorporate',
+  clean: 'cleanBilling',
+  retail: 'retailReceipt',
+  elegant: 'simpleElegant',
+  urban: 'urbanEdge',
+  creative: 'creativeFlow',
+  professionalclassic: 'professionalClassic',
+  moderncorporate: 'modernCorporate',
+  cleanbilling: 'cleanBilling',
+  retailreceipt: 'retailReceipt',
+  simpleelegant: 'simpleElegant',
+  urbanedge: 'urbanEdge',
+  creativeflow: 'creativeFlow',
+  neobrutalist: 'neoBrutalist',
+  minimaldark: 'minimalistDark',
+  minimalistdark: 'minimalistDark',
+  organiceco: 'organicEco',
+  corporatepro: 'corporatePro',
+  creativestudio: 'creativeStudio',
+  techmodern: 'techModern'
+};
+
+const normalizeTemplateLookupValue = (value) => {
+  const normalized = normalizeTemplateStyle(value).toLowerCase();
+  if (!normalized) return '';
+  const aliased = TEMPLATE_STYLE_ALIASES[normalized] || normalized;
+  return normalizeTemplateStyle(aliased).toLowerCase();
+};
+
+const resolveTemplateMeta = (templateStyle) => {
+  const normalized = normalizeTemplateLookupValue(templateStyle);
+  if (normalized) {
+    const matched = invoiceTemplates.find((template) =>
+      normalizeTemplateLookupValue(template.id) === normalized
+      || normalizeTemplateLookupValue(template.templateStyle) === normalized
+    );
+    if (matched) return matched;
+  }
+  return invoiceTemplates.find((template) => template.id === 'standard') || invoiceTemplates[0] || {};
+};
+
+const resolveCanonicalTemplateStyle = (templateStyle, fallback = 'standard') => {
+  const meta = resolveTemplateMeta(templateStyle || fallback);
+  return meta?.id || normalizeTemplateStyle(templateStyle) || fallback;
+};
+
+const resolveCssColor = (color, fallback) => {
+  if (Array.isArray(color) && color.length === 3) {
+    return `rgb(${color[0]}, ${color[1]}, ${color[2]})`;
+  }
+  return fallback;
+};
+
+const formatDisplayDate = (value) => {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return '';
+  }
+  return date.toLocaleDateString();
+};
+
+const buildReceiptEmailHtml = ({ context, templateMeta }) => {
+  const colors = templateMeta?.colors || {};
+  const primary = resolveCssColor(colors.primary, '#2563eb');
+  const secondary = resolveCssColor(colors.secondary, '#3b82f6');
+  const accent = resolveCssColor(colors.accent, '#eff6ff');
+  const text = resolveCssColor(colors.text, '#1f2937');
+  const templateName = templateMeta?.name || 'Standard';
+
+  return `
+    <div style="margin:0;padding:24px;background:#f8fafc;font-family:Arial,sans-serif;">
+      <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="max-width:640px;margin:0 auto;background:#fff;border:1px solid #e2e8f0;border-radius:10px;overflow:hidden;">
+        <tr>
+          <td style="padding:20px;background:linear-gradient(90deg, ${primary} 0%, ${secondary} 100%);">
+            <div style="font-size:22px;font-weight:700;color:#fff;">${escapeHtml(context.businessName)}</div>
+            <div style="font-size:12px;color:#dbeafe;margin-top:6px;">Receipt Template: ${escapeHtml(templateName)}</div>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:20px;">
+            <p style="margin:0 0 10px 0;color:#334155;line-height:1.6;">Dear ${escapeHtml(context.customerName)},</p>
+            <p style="margin:0;color:#334155;line-height:1.6;">Thank you for your payment. Your receipt details are below.</p>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:0 20px 20px 20px;">
+            <div style="border:1px solid #dbeafe;background:${accent};border-radius:8px;padding:14px;">
+              <div style="font-size:13px;color:${text};margin-bottom:6px;"><strong>Receipt:</strong> ${escapeHtml(context.receiptNumber)}</div>
+              <div style="font-size:13px;color:${text};margin-bottom:6px;"><strong>Invoice:</strong> ${escapeHtml(context.invoiceNumber)}</div>
+              <div style="font-size:13px;color:${text};margin-bottom:6px;"><strong>Payment Date:</strong> ${escapeHtml(context.paymentDate)}</div>
+              <div style="font-size:13px;color:${text};margin-bottom:6px;"><strong>Payment Method:</strong> ${escapeHtml(context.paymentMethod)}</div>
+              <div style="font-size:13px;color:${text};"><strong>Amount Paid:</strong> ${escapeHtml(context.amountPaid)} ${escapeHtml(context.currency)}</div>
+            </div>
+          </td>
+        </tr>
+      </table>
+    </div>
+  `;
+};
 
 const MAX_CLIENT_EMAIL_PDF_BYTES = Number.parseInt(
   String(process.env.MAX_CLIENT_EMAIL_PDF_BYTES || ''),
@@ -452,7 +564,8 @@ exports.getReceiptPDF = asyncHandler(async (req, res, next) => {
 exports.emailReceipt = asyncHandler(async (req, res, next) => {
   const receipt = await Receipt.findById(req.params.id)
     .populate('customer')
-    .populate('business');
+    .populate('business')
+    .populate('invoice', 'invoiceNumber currency');
   
   if (!receipt) {
     return next(new ErrorResponse(`Receipt not found with id ${req.params.id}`, 404));
@@ -471,9 +584,10 @@ exports.emailReceipt = asyncHandler(async (req, res, next) => {
     return next(new ErrorResponse(`Invalid customer email address: ${recipientEmail}`, 400));
   }
 
-  const requestedTemplateStyle = String(
-    req.body?.templateStyle || req.body?.templateId || req.body?.template || receipt.templateStyle || 'standard'
-  ).trim();
+  const requestedTemplateStyle = resolveCanonicalTemplateStyle(
+    req.body?.templateStyle || req.body?.templateId || req.body?.template || receipt.templateStyle || 'standard',
+    receipt.templateStyle || 'standard'
+  );
   const defaultAttachmentFileName = sanitizeAttachmentFileName(`receipt-${receipt.receiptNumber}.pdf`);
   const frontendPdfAttachment = resolveFrontendPdfAttachment(req.body, defaultAttachmentFileName);
   const attachmentFileName = frontendPdfAttachment?.fileName || defaultAttachmentFileName;
@@ -483,6 +597,18 @@ exports.emailReceipt = asyncHandler(async (req, res, next) => {
     receiptForPdf.templateStyle = requestedTemplateStyle;
   }
 
+  const templateMeta = resolveTemplateMeta(requestedTemplateStyle);
+  const mailContext = {
+    customerName: receipt.customer?.name || req.body?.customerName || 'Customer',
+    businessName: receipt.business?.name || 'Business',
+    receiptNumber: receipt.receiptNumber || '',
+    invoiceNumber: receipt.invoice?.invoiceNumber || receipt.invoice || 'N/A',
+    paymentDate: formatDisplayDate(receipt.date || receipt.createdAt),
+    amountPaid: Number(receipt.amountPaid || 0).toFixed(2),
+    paymentMethod: receipt.paymentMethod || 'manual',
+    currency: receipt.currency || receipt.invoice?.currency || receipt.business?.currency || 'USD'
+  };
+
   const pdfBuffer = frontendPdfAttachment?.buffer || await generatePDF.receipt(receiptForPdf);
   
   try {
@@ -490,15 +616,11 @@ exports.emailReceipt = asyncHandler(async (req, res, next) => {
       businessId: req.user.business,
       to: recipientEmail,
       subject: `Receipt ${receipt.receiptNumber} from ${receipt.business.name}`,
-      template: 'receipt',
-      context: {
-        customerName: receipt.customer.name,
-        businessName: receipt.business.name,
-        receiptNumber: receipt.receiptNumber,
-        paymentDate: receipt.date.toLocaleDateString(),
-        amountPaid: receipt.amountPaid.toFixed(2),
-        paymentMethod: receipt.paymentMethod
-      },
+      text: `Receipt ${mailContext.receiptNumber}. Amount paid: ${mailContext.amountPaid} ${mailContext.currency}.`,
+      html: buildReceiptEmailHtml({
+        context: mailContext,
+        templateMeta
+      }),
       attachments: [{
         filename: attachmentFileName,
         content: pdfBuffer,
