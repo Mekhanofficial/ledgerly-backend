@@ -414,10 +414,15 @@ exports.createReceipt = asyncHandler(async (req, res, next) => {
   if (customerId) {
     await Customer.updateCustomerStats(customerId);
   }
+
+  const populatedReceipt = await Receipt.findById(receipt._id)
+    .populate('customer', 'name email phone')
+    .populate('invoice', 'invoiceNumber currency')
+    .populate('cashier', 'name');
   
   res.status(201).json({
     success: true,
-    data: receipt,
+    data: populatedReceipt || receipt,
     change
   });
 });
@@ -464,10 +469,15 @@ exports.createReceiptFromInvoice = asyncHandler(async (req, res, next) => {
     templateStyle: req.body.templateStyle || req.body.templateId || req.body.template,
     createdBy: req.user.id
   });
+
+  const populatedReceipt = await Receipt.findById(receipt._id)
+    .populate('customer', 'name email phone')
+    .populate('invoice', 'invoiceNumber currency')
+    .populate('cashier', 'name');
   
   res.status(201).json({
     success: true,
-    data: receipt
+    data: populatedReceipt || receipt
   });
 });
 
