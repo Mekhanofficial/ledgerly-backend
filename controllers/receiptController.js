@@ -11,6 +11,70 @@ const generatePDF = require('../utils/generatePDF');
 const { calculateInvoiceTotals, toNumber } = require('../utils/invoiceCalculator');
 const { getTaxSettings } = require('../utils/taxSettings');
 
+const MAX_CLIENT_EMAIL_PDF_BYTES = Number.parseInt(
+  String(process.env.MAX_CLIENT_EMAIL_PDF_BYTES || ''),
+  10
+) > 0
+  ? Number.parseInt(String(process.env.MAX_CLIENT_EMAIL_PDF_BYTES), 10)
+  : 15 * 1024 * 1024;
+
+const sanitizeAttachmentFileName = (value, fallback = 'receipt.pdf') => {
+  const candidate = String(value || '')
+    .trim()
+    .replace(/[<>:"/\\|?*]/g, '');
+  if (!candidate) return fallback;
+  return candidate.toLowerCase().endsWith('.pdf') ? candidate : `${candidate}.pdf`;
+};
+
+const decodeBase64PdfBuffer = (value) => {
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+  const normalized = raw.includes('base64,') ? raw.split('base64,').pop() : raw;
+  if (!normalized) return null;
+  try {
+    const buffer = Buffer.from(normalized, 'base64');
+    return buffer.length > 0 ? buffer : null;
+  } catch {
+    return null;
+  }
+};
+
+const resolveFrontendPdfAttachment = (payload = {}, defaultFileName = 'receipt.pdf') => {
+  const attachment = payload?.pdfAttachment;
+  if (!attachment || typeof attachment !== 'object') {
+    return null;
+  }
+
+  const encoding = String(attachment.encoding || 'base64').trim().toLowerCase();
+  if (encoding && encoding !== 'base64') {
+    return null;
+  }
+
+  const buffer = decodeBase64PdfBuffer(
+    attachment.data || attachment.content || attachment.base64 || attachment.base64Data
+  );
+  if (!buffer) {
+    return null;
+  }
+
+  if (buffer.length > MAX_CLIENT_EMAIL_PDF_BYTES) {
+    throw new ErrorResponse(
+      `Attached PDF is too large. Maximum allowed size is ${Math.round(MAX_CLIENT_EMAIL_PDF_BYTES / (1024 * 1024))}MB`,
+      413
+    );
+  }
+
+  if (buffer.slice(0, 4).toString('utf8') !== '%PDF') {
+    return null;
+  }
+
+  return {
+    buffer,
+    fileName: sanitizeAttachmentFileName(attachment.fileName || attachment.filename, defaultFileName),
+    source: String(attachment.source || 'frontend').trim().toLowerCase()
+  };
+};
+
 const ensureWalkInCustomer = async (req, fallbackName = 'Walk-in Customer') => {
   const existing = await Customer.findOne({
     business: req.user.business,
@@ -406,8 +470,20 @@ exports.emailReceipt = asyncHandler(async (req, res, next) => {
   if (!hasValidRecipientEmail) {
     return next(new ErrorResponse(`Invalid customer email address: ${recipientEmail}`, 400));
   }
-  
-  const pdfBuffer = await generatePDF.receipt(receipt);
+
+  const requestedTemplateStyle = String(
+    req.body?.templateStyle || req.body?.templateId || req.body?.template || receipt.templateStyle || 'standard'
+  ).trim();
+  const defaultAttachmentFileName = sanitizeAttachmentFileName(`receipt-${receipt.receiptNumber}.pdf`);
+  const frontendPdfAttachment = resolveFrontendPdfAttachment(req.body, defaultAttachmentFileName);
+  const attachmentFileName = frontendPdfAttachment?.fileName || defaultAttachmentFileName;
+
+  const receiptForPdf = receipt.toObject ? receipt.toObject() : receipt;
+  if (requestedTemplateStyle) {
+    receiptForPdf.templateStyle = requestedTemplateStyle;
+  }
+
+  const pdfBuffer = frontendPdfAttachment?.buffer || await generatePDF.receipt(receiptForPdf);
   
   try {
     await sendEmail({
@@ -424,13 +500,18 @@ exports.emailReceipt = asyncHandler(async (req, res, next) => {
         paymentMethod: receipt.paymentMethod
       },
       attachments: [{
-        filename: `receipt-${receipt.receiptNumber}.pdf`,
+        filename: attachmentFileName,
         content: pdfBuffer,
         contentType: 'application/pdf'
       }]
     });
   } catch (error) {
     return next(new ErrorResponse(error?.message || 'Unable to send receipt email', 502));
+  }
+
+  if (requestedTemplateStyle && requestedTemplateStyle !== receipt.templateStyle) {
+    receipt.templateStyle = requestedTemplateStyle;
+    await receipt.save();
   }
   
   res.status(200).json({
