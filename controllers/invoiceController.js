@@ -145,6 +145,71 @@ const toSafeEmailErrorMessage = (error) => {
   return raw;
 };
 
+const MAX_CLIENT_EMAIL_PDF_BYTES = Number.parseInt(
+  String(process.env.MAX_CLIENT_EMAIL_PDF_BYTES || ''),
+  10
+) > 0
+  ? Number.parseInt(String(process.env.MAX_CLIENT_EMAIL_PDF_BYTES), 10)
+  : 15 * 1024 * 1024;
+
+const sanitizeAttachmentFileName = (value, fallback = 'invoice.pdf') => {
+  const candidate = String(value || '')
+    .trim()
+    .replace(/[<>:"/\\|?*]/g, '');
+  if (!candidate) return fallback;
+  return candidate.toLowerCase().endsWith('.pdf') ? candidate : `${candidate}.pdf`;
+};
+
+const decodeBase64PdfBuffer = (value) => {
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+  const normalized = raw.includes('base64,') ? raw.split('base64,').pop() : raw;
+  if (!normalized) return null;
+  try {
+    const buffer = Buffer.from(normalized, 'base64');
+    return buffer.length > 0 ? buffer : null;
+  } catch {
+    return null;
+  }
+};
+
+const resolveFrontendPdfAttachment = (payload = {}, defaultFileName = 'invoice.pdf') => {
+  const attachment = payload?.pdfAttachment;
+  if (!attachment || typeof attachment !== 'object') {
+    return null;
+  }
+
+  const encoding = String(attachment.encoding || 'base64').trim().toLowerCase();
+  if (encoding && encoding !== 'base64') {
+    return null;
+  }
+
+  const buffer = decodeBase64PdfBuffer(
+    attachment.data || attachment.content || attachment.base64 || attachment.base64Data
+  );
+  if (!buffer) {
+    return null;
+  }
+
+  if (buffer.length > MAX_CLIENT_EMAIL_PDF_BYTES) {
+    throw new ErrorResponse(
+      `Attached PDF is too large. Maximum allowed size is ${Math.round(MAX_CLIENT_EMAIL_PDF_BYTES / (1024 * 1024))}MB`,
+      413
+    );
+  }
+
+  // Ignore invalid payloads and safely fall back to server-side generation.
+  if (buffer.slice(0, 4).toString('utf8') !== '%PDF') {
+    return null;
+  }
+
+  return {
+    buffer,
+    fileName: sanitizeAttachmentFileName(attachment.fileName || attachment.filename, defaultFileName),
+    source: String(attachment.source || 'frontend').trim().toLowerCase()
+  };
+};
+
 const interpolateTemplateText = (input, context = {}) => {
   return String(input || '').replace(/{{\s*([a-zA-Z0-9_]+)\s*}}/g, (match, key) => {
     const resolved = context[key];
@@ -944,8 +1009,12 @@ exports.sendInvoice = asyncHandler(async (req, res, next) => {
   const resolvedSubject = interpolateTemplateText(subjectTemplate, mailContext);
   const resolvedMessage = interpolateTemplateText(messageTemplate, mailContext);
 
-  // Generate PDF with the same template selected for this send request
-  const pdfBuffer = await generatePDF.invoice(invoice, {
+  // Prefer frontend-rendered PDF when provided to guarantee email attachment
+  // matches the exact client-side template rendering.
+  const defaultAttachmentFileName = sanitizeAttachmentFileName(`invoice-${invoice.invoiceNumber}.pdf`);
+  const frontendPdfAttachment = resolveFrontendPdfAttachment(req.body, defaultAttachmentFileName);
+  const attachmentFileName = frontendPdfAttachment?.fileName || defaultAttachmentFileName;
+  const pdfBuffer = frontendPdfAttachment?.buffer || await generatePDF.invoice(invoice, {
     templateStyle: resolvedTemplateStyle
   });
 
@@ -963,7 +1032,7 @@ exports.sendInvoice = asyncHandler(async (req, res, next) => {
         templateMeta
       }),
       attachments: [{
-        filename: `invoice-${invoice.invoiceNumber}.pdf`,
+        filename: attachmentFileName,
         content: pdfBuffer,
         contentType: 'application/pdf'
       }]
