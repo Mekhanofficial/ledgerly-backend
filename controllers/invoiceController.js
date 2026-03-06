@@ -1272,7 +1272,13 @@ exports.recordPayment = asyncHandler(async (req, res, next) => {
         currency: invoice.currency
       }
     };
-    const receiptPDF = await generatePDF.receipt(receiptForPdf);
+    const defaultReceiptAttachmentFileName = sanitizeAttachmentFileName(`receipt-${receipt.receiptNumber}.pdf`);
+    const frontendReceiptAttachment = resolveFrontendPdfAttachment(
+      { pdfAttachment: req.body?.receiptPdfAttachment || req.body?.pdfAttachment },
+      defaultReceiptAttachmentFileName
+    );
+    const receiptAttachmentFileName = frontendReceiptAttachment?.fileName || defaultReceiptAttachmentFileName;
+    const receiptPDF = frontendReceiptAttachment?.buffer || await generatePDF.receipt(receiptForPdf);
     
     if (invoice.customer?.email) {
       try {
@@ -1291,7 +1297,7 @@ exports.recordPayment = asyncHandler(async (req, res, next) => {
             paymentMethod
           },
           attachments: [{
-            filename: `receipt-${receipt.receiptNumber}.pdf`,
+            filename: receiptAttachmentFileName,
             content: receiptPDF,
             contentType: 'application/pdf'
           }]
