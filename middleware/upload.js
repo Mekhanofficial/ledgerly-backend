@@ -44,14 +44,34 @@ const storage = multer.diskStorage({
 
 // Check file type
 function checkFileType(file, cb) {
-  const extensionTypes = /jpeg|jpg|png|gif|webp|pdf|doc|docx|xls|xlsx|csv|txt|ppt|pptx/;
-  const mimeTypes =
+  const imageExtensions = /jpeg|jpg|png|gif|webp/;
+  const imageMimeTypes = /image\//;
+
+  const profileExtensions = /jpeg|jpg|png|webp/;
+  const profileMimeTypes = /^image\/(jpeg|png|webp)$/i;
+
+  const documentExtensions = /jpeg|jpg|png|gif|webp|pdf|doc|docx|xls|xlsx|csv|txt|ppt|pptx/;
+  const documentMimeTypes =
     /image\/|application\/pdf|application\/msword|application\/vnd\.openxmlformats-officedocument\.wordprocessingml\.document|application\/vnd\.ms-excel|application\/vnd\.openxmlformats-officedocument\.spreadsheetml\.sheet|text\/csv|text\/plain|application\/vnd\.ms-powerpoint|application\/vnd\.openxmlformats-officedocument\.presentationml\.presentation/;
 
-  const extname = extensionTypes.test(path.extname(file.originalname).toLowerCase());
-  const mimetype = mimeTypes.test(file.mimetype);
+  const ext = path.extname(file.originalname).toLowerCase().replace('.', '');
+  const mime = String(file.mimetype || '').toLowerCase();
 
-  if (extname || mimetype) {
+  if (file.fieldname === 'profileImage') {
+    if (profileExtensions.test(ext) && profileMimeTypes.test(mime)) {
+      return cb(null, true);
+    }
+    return cb(new ErrorResponse('Profile photos must be JPG, PNG, or WEBP images.', 400));
+  }
+
+  if (file.fieldname === 'logo' || file.fieldname === 'productImage') {
+    if (imageExtensions.test(ext) && imageMimeTypes.test(mime)) {
+      return cb(null, true);
+    }
+    return cb(new ErrorResponse('Only image files are allowed for this upload.', 400));
+  }
+
+  if (documentExtensions.test(ext) && documentMimeTypes.test(mime)) {
     return cb(null, true);
   }
 
@@ -61,6 +81,9 @@ function checkFileType(file, cb) {
 // Init upload
 const upload = multer({
   storage: storage,
+  limits: {
+    fileSize: 10 * 1024 * 1024
+  },
   fileFilter: function (req, file, cb) {
     checkFileType(file, cb);
   }

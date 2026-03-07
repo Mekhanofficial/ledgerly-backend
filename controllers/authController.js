@@ -5,6 +5,7 @@ const asyncHandler = require('../utils/asyncHandler');
 const sendEmail = require('../utils/email');
 const crypto = require('crypto');
 const path = require('path');
+const fs = require('fs');
 const { OTP_EXPIRY_MINUTES, sendVerificationOtpEmail } = require('../emailmicroservice');
 const { getDefaultPermissions } = require('../utils/rolePermissions');
 const {
@@ -38,6 +39,50 @@ const runWithTimeout = async (task, timeoutMs, timeoutMessage) => {
   } finally {
     clearTimeout(timeoutId);
   }
+};
+
+const DEFAULT_PROFILE_IMAGE = 'uploads/profile/default-avatar.png';
+
+const normalizeProfileImagePath = (filePath) => {
+  const raw = String(filePath || '').trim();
+  if (!raw) return '';
+  const normalized = raw
+    .replace(/\\/g, '/')
+    .replace(/^\.?\//, '')
+    .replace(/^\/+/, '');
+
+  const uploadsMatch = normalized.match(/(?:^|\/)(uploads\/.+)$/i);
+  if (uploadsMatch?.[1]) {
+    return uploadsMatch[1];
+  }
+
+  return normalized;
+};
+
+const buildAvatarUrl = (req, profileImagePath) => {
+  const normalized = normalizeProfileImagePath(profileImagePath);
+  if (!normalized) return '';
+  return `${req.protocol}://${req.get('host')}/${normalized}`;
+};
+
+const removeProfileImageFromDisk = (profileImagePath) => {
+  const normalized = normalizeProfileImagePath(profileImagePath);
+  if (!normalized || normalized === DEFAULT_PROFILE_IMAGE) return;
+
+  const absolutePath = path.join(__dirname, '..', normalized);
+  if (fs.existsSync(absolutePath)) {
+    try {
+      fs.unlinkSync(absolutePath);
+    } catch (error) {
+      console.error('Failed to remove old profile image:', error?.message || error);
+    }
+  }
+};
+
+const toClientUser = (userDoc, req) => {
+  const user = userDoc?.toObject ? userDoc.toObject() : { ...(userDoc || {}) };
+  user.avatarUrl = buildAvatarUrl(req, user.profileImage);
+  return user;
 };
 
 const hashOtp = (value) =>
@@ -343,7 +388,7 @@ exports.getMe = asyncHandler(async (req, res, next) => {
 
   res.status(200).json({
     success: true,
-    data: user
+    data: toClientUser(user, req)
   });
 });
 
@@ -351,29 +396,46 @@ exports.getMe = asyncHandler(async (req, res, next) => {
 // @route   PUT /api/v1/auth/updatedetails
 // @access  Private
 exports.updateDetails = asyncHandler(async (req, res, next) => {
-  const updates = {};
-  ['name', 'email', 'phone'].forEach((field) => {
-    if (req.body[field] !== undefined && req.body[field] !== '') {
-      updates[field] = req.body[field];
-    }
-  });
-
-  if (req.file) {
-    updates.profileImage = req.file.path.split(path.sep).join('/');
+  const user = await User.findById(req.user.id);
+  if (!user) {
+    return next(new ErrorResponse('User not found', 404));
   }
 
-  if (Object.keys(updates).length === 0) {
+  const updatedFields = new Set();
+
+  if (req.body.name !== undefined && req.body.name !== '') {
+    user.name = req.body.name;
+    updatedFields.add('name');
+  }
+  if (req.body.email !== undefined && req.body.email !== '') {
+    user.email = normalizeEmail(req.body.email);
+    updatedFields.add('email');
+  }
+  if (req.body.phone !== undefined && req.body.phone !== '') {
+    user.phone = req.body.phone;
+    updatedFields.add('phone');
+  }
+
+  let previousProfileImage = '';
+  if (req.file?.path) {
+    previousProfileImage = user.profileImage || '';
+    user.profileImage = normalizeProfileImagePath(req.file.path);
+    updatedFields.add('profileImage');
+  }
+
+  if (updatedFields.size === 0) {
     return next(new ErrorResponse('No updates provided', 400));
   }
 
-  const user = await User.findByIdAndUpdate(req.user.id, updates, {
-    new: true,
-    runValidators: true
-  });
+  await user.save();
+
+  if (previousProfileImage && previousProfileImage !== user.profileImage) {
+    removeProfileImageFromDisk(previousProfileImage);
+  }
 
   res.status(200).json({
     success: true,
-    data: user
+    data: toClientUser(user, req)
   });
 });
 
@@ -505,6 +567,8 @@ const sendTokenResponse = (user, statusCode, res) => {
     options.secure = true;
   }
 
+  const profileImage = normalizeProfileImagePath(user.profileImage) || DEFAULT_PROFILE_IMAGE;
+
   res
     .status(statusCode)
     .cookie('token', token, options)
@@ -519,7 +583,8 @@ const sendTokenResponse = (user, statusCode, res) => {
       phone: user.phone,
       role: user.role,
       business: user.business,
-      profileImage: user.profileImage,
+      profileImage,
+      avatarUrl: `${res.req.protocol}://${res.req.get('host')}/${profileImage}`,
       permissions: user.permissions
     }
     });

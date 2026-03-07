@@ -16,7 +16,9 @@ const {
   getRecurringInvoices,
   setInvoiceRecurring,
   pauseRecurringInvoice,
-  resumeRecurringInvoice
+  resumeRecurringInvoice,
+  generateRecurringInvoiceNow,
+  cancelRecurringInvoice
 } = require('../controllers/invoiceController');
 const {
   getPublicInvoice,
@@ -73,6 +75,16 @@ router.put(
   '/recurring/:id/resume',
   authorize('admin', 'accountant', 'staff'),
   resumeRecurringInvoice
+);
+router.post(
+  '/recurring/:id/generate',
+  authorize('admin', 'accountant', 'staff'),
+  generateRecurringInvoiceNow
+);
+router.put(
+  '/recurring/:id/cancel',
+  authorize('admin', 'accountant', 'staff'),
+  cancelRecurringInvoice
 );
 
 router.post(

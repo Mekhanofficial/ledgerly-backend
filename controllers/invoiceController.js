@@ -12,8 +12,9 @@ const sendEmail = require('../utils/email');
 const generatePDF = require('../utils/generatePDF');
 const { calculateInvoiceTotals, toNumber, roundMoney } = require('../utils/invoiceCalculator');
 const { getTaxSettings } = require('../utils/taxSettings');
-const { normalizePlanId } = require('../utils/planConfig');
+const { normalizePlanId, getPlanDefinition } = require('../utils/planConfig');
 const { resolveBillingOwner, resetInvoiceCountIfNeeded, resolveEffectivePlan } = require('../utils/subscriptionService');
+const { processRecurringTemplateInvoice } = require('../utils/recurringInvoiceService');
 const User = require('../models/User');
 const {
   normalizeRole,
@@ -571,6 +572,13 @@ exports.createInvoice = asyncHandler(async (req, res, next) => {
   const effectivePlan = resolveEffectivePlan(billingOwner);
   if (!isMultiCurrencyAllowed(effectivePlan) && currency !== business.currency) {
     return next(new ErrorResponse('Multi-currency is available on Professional and Enterprise plans.', 403));
+  }
+
+  if (Boolean(req.body?.recurring?.isRecurring)) {
+    const planDef = getPlanDefinition(effectivePlan);
+    if (!planDef?.allowRecurring) {
+      return next(new ErrorResponse('Upgrade required to access recurring invoices.', 403));
+    }
   }
 
   // Add business to req.body
@@ -1781,6 +1789,104 @@ exports.resumeRecurringInvoice = asyncHandler(async (req, res, next) => {
   res.status(200).json({
     success: true,
     message: 'Recurring invoice resumed',
+    data: invoice
+  });
+});
+
+// @desc    Generate invoice immediately from recurring profile
+// @route   POST /api/v1/invoices/recurring/:id/generate
+// @access  Private
+exports.generateRecurringInvoiceNow = asyncHandler(async (req, res, next) => {
+  const invoice = await Invoice.findById(req.params.id);
+
+  if (!invoice) {
+    return next(new ErrorResponse(`Invoice not found with id ${req.params.id}`, 404));
+  }
+
+  if (invoice.business.toString() !== req.user.business.toString()) {
+    return next(new ErrorResponse('Not authorized to update this invoice', 403));
+  }
+
+  const effectiveRole = getEffectiveRole(req);
+  if (isClient(effectiveRole)) {
+    return next(new ErrorResponse('Not authorized to generate recurring invoices', 403));
+  }
+  if (isStaff(effectiveRole) && invoice.createdBy?.toString() !== req.user.id) {
+    return next(new ErrorResponse('Not authorized to update this invoice', 403));
+  }
+
+  if (!invoice.recurring?.isRecurring) {
+    return next(new ErrorResponse('Invoice is not set as recurring', 400));
+  }
+
+  if (invoice.recurring.status === 'completed') {
+    return next(new ErrorResponse('Recurring profile is already completed', 400));
+  }
+
+  const processed = await processRecurringTemplateInvoice(invoice, {
+    now: new Date(),
+    force: true,
+    maxOccurrencesPerTemplate: 1,
+    generatedBy: req.user.id
+  });
+
+  if (processed.blockedReason) {
+    return next(new ErrorResponse(processed.blockedReason, 409));
+  }
+
+  const refreshedInvoice = await Invoice.findById(req.params.id)
+    .populate('customer', 'name email phone company')
+    .populate('createdBy', 'name email');
+
+  res.status(200).json({
+    success: true,
+    message: processed.generatedCount > 0
+      ? 'Recurring invoice generated successfully'
+      : 'Recurring invoice generation skipped (already generated for this occurrence)',
+    data: {
+      recurringProfile: refreshedInvoice,
+      generatedInvoice: processed.latestGeneratedInvoice || null,
+      generatedCount: processed.generatedCount,
+      duplicateCount: processed.duplicateCount
+    }
+  });
+});
+
+// @desc    Cancel recurring profile for an invoice
+// @route   PUT /api/v1/invoices/recurring/:id/cancel
+// @access  Private
+exports.cancelRecurringInvoice = asyncHandler(async (req, res, next) => {
+  const invoice = await Invoice.findById(req.params.id);
+
+  if (!invoice) {
+    return next(new ErrorResponse(`Invoice not found with id ${req.params.id}`, 404));
+  }
+
+  if (invoice.business.toString() !== req.user.business.toString()) {
+    return next(new ErrorResponse('Not authorized to update this invoice', 403));
+  }
+
+  const effectiveRole = getEffectiveRole(req);
+  if (isClient(effectiveRole)) {
+    return next(new ErrorResponse('Not authorized to update recurring invoices', 403));
+  }
+  if (isStaff(effectiveRole) && invoice.createdBy?.toString() !== req.user.id) {
+    return next(new ErrorResponse('Not authorized to update this invoice', 403));
+  }
+
+  if (!invoice.recurring?.isRecurring) {
+    return next(new ErrorResponse('Invoice is not set as recurring', 400));
+  }
+
+  invoice.recurring.isRecurring = false;
+  invoice.recurring.status = 'completed';
+  invoice.recurring.nextInvoiceDate = undefined;
+  invoice.updatedBy = req.user.id;
+  await invoice.save();
+
+  res.status(200).json({
+    success: true,
+    message: 'Recurring profile cancelled',
     data: invoice
   });
 });

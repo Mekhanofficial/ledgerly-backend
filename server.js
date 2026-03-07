@@ -9,6 +9,7 @@ const hpp = require('hpp');
 const rateLimit = require('express-rate-limit');
 const connectDB = require('./config/db');
 const { resetMonthlyInvoiceCounts } = require('./utils/subscriptionService');
+const { processDueRecurringInvoices } = require('./utils/recurringInvoiceService');
 const { getEmailConfig, isEmailConfigured } = require('./config/email');
 
 // Load env vars
@@ -236,6 +237,58 @@ const scheduleInvoiceReset = () => {
 };
 
 scheduleInvoiceReset();
+
+const parsePositiveInt = (value, fallback) => {
+  const parsed = Number.parseInt(String(value ?? ''), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+};
+
+const scheduleRecurringInvoiceGeneration = () => {
+  const enabled = String(process.env.RECURRING_INVOICE_AUTORUN || 'true')
+    .trim()
+    .toLowerCase() !== 'false';
+
+  if (!enabled) {
+    console.log('Recurring invoice generation is disabled (RECURRING_INVOICE_AUTORUN=false).');
+    return;
+  }
+
+  const intervalMs = parsePositiveInt(
+    process.env.RECURRING_INVOICE_INTERVAL_MS,
+    5 * 60 * 1000
+  );
+  const initialDelayMs = parsePositiveInt(
+    process.env.RECURRING_INVOICE_INITIAL_DELAY_MS,
+    20 * 1000
+  );
+
+  let isRunning = false;
+
+  const runRecurringGeneration = async () => {
+    if (isRunning) return;
+    isRunning = true;
+
+    try {
+      const summary = await processDueRecurringInvoices();
+      if (
+        summary.generatedInvoices > 0
+        || summary.failedTemplates > 0
+        || summary.blockedTemplates > 0
+      ) {
+        console.log('Recurring invoice run summary:', summary);
+      }
+    } catch (error) {
+      console.error('Recurring invoice generation failed:', error?.message || error);
+    } finally {
+      isRunning = false;
+    }
+  };
+
+  setTimeout(runRecurringGeneration, initialDelayMs);
+  setInterval(runRecurringGeneration, intervalMs);
+};
+
+scheduleRecurringInvoiceGeneration();
 
 // Handle unhandled promise rejections
 process.on('unhandledRejection', (err, promise) => {
