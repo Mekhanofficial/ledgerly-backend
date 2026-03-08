@@ -10,18 +10,34 @@ const {
 } = require('../controllers/productController');
 const { protect, authorize } = require('../middleware/auth');
 const { checkFeatureAccess } = require('../middleware/subscription');
+const uploadImage = require('../middleware/uploadImage');
+
+const uploadProductImage = uploadImage.fields([
+  { name: 'image', maxCount: 1 },
+  { name: 'productImage', maxCount: 1 }
+]);
 
 router.use(protect);
 
 router.route('/')
   .get(authorize('admin', 'accountant', 'staff', 'viewer'), getProducts)
-  .post(authorize('admin', 'accountant'), checkFeatureAccess('inventory'), createProduct);
+  .post(
+    authorize('admin', 'accountant'),
+    checkFeatureAccess('inventory'),
+    uploadProductImage,
+    createProduct
+  );
 
 router.get('/low-stock', authorize('admin', 'accountant'), checkFeatureAccess('inventory'), getLowStockProducts);
 
 router.route('/:id')
   .get(authorize('admin', 'accountant', 'staff', 'viewer'), getProduct)
-  .put(authorize('admin', 'accountant'), checkFeatureAccess('inventory'), updateProduct);
+  .put(
+    authorize('admin', 'accountant'),
+    checkFeatureAccess('inventory'),
+    uploadProductImage,
+    updateProduct
+  );
 
 router.post('/:id/adjust-stock', authorize('admin', 'accountant'), checkFeatureAccess('inventory'), adjustStock);
 

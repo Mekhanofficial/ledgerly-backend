@@ -1,9 +1,12 @@
+const fs = require('fs');
+const path = require('path');
 const Product = require('../models/Product');
 const Category = require('../models/Category');
 const Supplier = require('../models/Supplier');
 const InventoryTransaction = require('../models/InventoryTransaction');
 const ErrorResponse = require('../utils/errorResponse');
 const asyncHandler = require('../utils/asyncHandler');
+const compressImage = require('../utils/compressImage');
 
 const toStockNumber = (value, fallback = 0) => {
   const parsed = Number(value);
@@ -37,6 +40,98 @@ const normalizeStockPayload = (incomingStock = {}, currentStock = {}) => {
     reserved,
     available: Math.max(0, quantity - reserved)
   };
+};
+
+const parseJsonField = (value) => {
+  if (typeof value !== 'string') return value;
+  const trimmed = value.trim();
+  if (!trimmed) return value;
+  if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) return value;
+
+  try {
+    return JSON.parse(trimmed);
+  } catch (error) {
+    return value;
+  }
+};
+
+const parseBooleanField = (value) => {
+  if (typeof value !== 'string') return value;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'true') return true;
+  if (normalized === 'false') return false;
+  return value;
+};
+
+const normalizeProductPayload = (payload) => {
+  const normalizedPayload = payload && typeof payload === 'object' ? { ...payload } : {};
+
+  ['stock', 'variants', 'attributes', 'dimensions', 'images'].forEach((field) => {
+    if (normalizedPayload[field] !== undefined) {
+      normalizedPayload[field] = parseJsonField(normalizedPayload[field]);
+    }
+  });
+
+  ['isActive', 'isTaxable', 'trackInventory', 'alertOnLowStock'].forEach((field) => {
+    if (normalizedPayload[field] !== undefined) {
+      normalizedPayload[field] = parseBooleanField(normalizedPayload[field]);
+    }
+  });
+
+  return normalizedPayload;
+};
+
+const normalizeStoredUploadPath = (filePath) => {
+  const raw = String(filePath || '').trim();
+  if (!raw) return '';
+
+  const normalized = raw
+    .replace(/\\/g, '/')
+    .replace(/^\.?\//, '')
+    .replace(/^\/+/, '');
+
+  const uploadsMatch = normalized.match(/(?:^|\/)(uploads\/.+)$/i);
+  if (uploadsMatch?.[1]) {
+    return uploadsMatch[1];
+  }
+
+  return normalized;
+};
+
+const isLocalUploadPath = (filePath) => /^uploads\//i.test(normalizeStoredUploadPath(filePath));
+
+const resolveUploadAbsolutePath = (filePath) => {
+  const normalized = normalizeStoredUploadPath(filePath);
+  if (!normalized) return '';
+  return path.join(__dirname, '..', normalized);
+};
+
+const removeFileFromDisk = (filePath) => {
+  const absolutePath = resolveUploadAbsolutePath(filePath);
+  if (!absolutePath) return;
+
+  try {
+    if (fs.existsSync(absolutePath)) {
+      fs.unlinkSync(absolutePath);
+    }
+  } catch (error) {
+    console.error('Failed to remove product image from disk:', error?.message || error);
+  }
+};
+
+const getUploadedImage = (req) => {
+  if (req.file) return req.file;
+
+  if (req.files && typeof req.files === 'object') {
+    if (Array.isArray(req.files.image) && req.files.image[0]) {
+      return req.files.image[0];
+    }
+    if (Array.isArray(req.files.productImage) && req.files.productImage[0]) {
+      return req.files.productImage[0];
+    }
+  }
+
+  return null;
 };
 
 // @desc    Get all products
@@ -219,69 +314,99 @@ exports.getProduct = asyncHandler(async (req, res, next) => {
 // @route   POST /api/v1/products
 // @access  Private
 exports.createProduct = asyncHandler(async (req, res, next) => {
+  req.body = normalizeProductPayload(req.body);
   req.body.business = req.user.business;
   req.body.createdBy = req.user.id;
-  
-  // Generate SKU if not provided
-  if (!req.body.sku) {
-    const lastProduct = await Product.findOne({
-      business: req.user.business
-    }).sort({ createdAt: -1 });
-    
-    let lastNumber = 0;
-    if (lastProduct && lastProduct.sku) {
-      const matches = lastProduct.sku.match(/\d+/);
-      if (matches) lastNumber = parseInt(matches[0]);
+
+  const uploadedImage = getUploadedImage(req);
+  let uploadedImagePath = '';
+
+  if (uploadedImage?.path) {
+    try {
+      const compressedPath = await compressImage(uploadedImage.path);
+      uploadedImagePath = normalizeStoredUploadPath(compressedPath);
+      req.body.images = [{
+        url: uploadedImagePath,
+        altText: req.body.name || '',
+        isPrimary: true
+      }];
+    } catch (error) {
+      removeFileFromDisk(uploadedImage.path);
+      throw error;
     }
-    
-    req.body.sku = `PROD-${String(lastNumber + 1).padStart(5, '0')}`;
-  }
-  
-  const product = await Product.create(req.body);
-
-  if (req.body.category) {
-    await Category.findByIdAndUpdate(req.body.category, {
-      $inc: { productCount: 1 },
-      $set: { updatedBy: req.user.id }
-    });
   }
 
-  if (req.body.supplier) {
-    await Supplier.findByIdAndUpdate(req.body.supplier, {
-      $addToSet: { products: product._id },
-      $set: { updatedBy: req.user.id }
+  let shouldCleanupUploadedImage = Boolean(uploadedImagePath);
+  try {
+    // Generate SKU if not provided
+    if (!req.body.sku) {
+      const lastProduct = await Product.findOne({
+        business: req.user.business
+      }).sort({ createdAt: -1 });
+
+      let lastNumber = 0;
+      if (lastProduct && lastProduct.sku) {
+        const matches = lastProduct.sku.match(/\d+/);
+        if (matches) lastNumber = parseInt(matches[0], 10);
+      }
+
+      req.body.sku = `PROD-${String(lastNumber + 1).padStart(5, '0')}`;
+    }
+
+    const product = await Product.create(req.body);
+    shouldCleanupUploadedImage = false;
+
+    if (req.body.category) {
+      await Category.findByIdAndUpdate(req.body.category, {
+        $inc: { productCount: 1 },
+        $set: { updatedBy: req.user.id }
+      });
+    }
+
+    if (req.body.supplier) {
+      await Supplier.findByIdAndUpdate(req.body.supplier, {
+        $addToSet: { products: product._id },
+        $set: { updatedBy: req.user.id }
+      });
+    }
+
+    // Create initial inventory transaction
+    if (req.body.stock && req.body.stock.quantity > 0) {
+      await InventoryTransaction.create({
+        business: req.user.business,
+        product: product._id,
+        type: 'purchase',
+        quantity: req.body.stock.quantity,
+        unitCost: req.body.costPrice,
+        totalCost: req.body.stock.quantity * req.body.costPrice,
+        reference: 'Initial Stock',
+        notes: 'Initial product creation',
+        reason: 'Initial inventory',
+        previousStock: 0,
+        newStock: req.body.stock.quantity,
+        user: req.user.name || req.user.email || 'System',
+        createdBy: req.user.id
+      });
+    }
+
+    res.status(201).json({
+      success: true,
+      data: product
     });
+  } catch (error) {
+    if (shouldCleanupUploadedImage && uploadedImagePath) {
+      removeFileFromDisk(uploadedImagePath);
+    }
+    throw error;
   }
-  
-  // Create initial inventory transaction
-  if (req.body.stock && req.body.stock.quantity > 0) {
-    await InventoryTransaction.create({
-      business: req.user.business,
-      product: product._id,
-      type: 'purchase',
-      quantity: req.body.stock.quantity,
-      unitCost: req.body.costPrice,
-      totalCost: req.body.stock.quantity * req.body.costPrice,
-      reference: 'Initial Stock',
-      notes: 'Initial product creation',
-      reason: 'Initial inventory',
-      previousStock: 0,
-      newStock: req.body.stock.quantity,
-      user: req.user.name || req.user.email || 'System',
-      createdBy: req.user.id
-    });
-  }
-  
-  res.status(201).json({
-    success: true,
-    data: product
-  });
 });
 
 // @desc    Update product
 // @route   PUT /api/v1/products/:id
 // @access  Private
 exports.updateProduct = asyncHandler(async (req, res, next) => {
+  req.body = normalizeProductPayload(req.body);
+
   let product = await Product.findOne({
     _id: req.params.id,
     business: req.user.business
@@ -293,6 +418,29 @@ exports.updateProduct = asyncHandler(async (req, res, next) => {
 
   const previousCategory = product.category ? product.category.toString() : null;
   const previousSupplier = product.supplier ? product.supplier.toString() : null;
+  const previousLocalImagePaths = Array.isArray(product.images)
+    ? product.images
+      .map((image) => image?.url)
+      .filter((imagePath) => isLocalUploadPath(imagePath))
+    : [];
+
+  const uploadedImage = getUploadedImage(req);
+  let uploadedImagePath = '';
+
+  if (uploadedImage?.path) {
+    try {
+      const compressedPath = await compressImage(uploadedImage.path);
+      uploadedImagePath = normalizeStoredUploadPath(compressedPath);
+      req.body.images = [{
+        url: uploadedImagePath,
+        altText: req.body.name || product.name || '',
+        isPrimary: true
+      }];
+    } catch (error) {
+      removeFileFromDisk(uploadedImage.path);
+      throw error;
+    }
+  }
 
   req.body.updatedBy = req.user.id;
 
@@ -301,46 +449,61 @@ exports.updateProduct = asyncHandler(async (req, res, next) => {
     req.body.stock = normalizeStockPayload(req.body.stock, currentStock);
   }
 
-  product = await Product.findByIdAndUpdate(req.params.id, req.body, {
-    new: true,
-    runValidators: true
-  });
-
-  const updatedCategory = product.category ? product.category.toString() : null;
-  const updatedSupplier = product.supplier ? product.supplier.toString() : null;
-
-  if (updatedCategory && updatedCategory !== previousCategory) {
-    await Category.findByIdAndUpdate(updatedCategory, {
-      $inc: { productCount: 1 },
-      $set: { updatedBy: req.user.id }
+  let shouldCleanupUploadedImage = Boolean(uploadedImagePath);
+  try {
+    product = await Product.findByIdAndUpdate(req.params.id, req.body, {
+      new: true,
+      runValidators: true
     });
-  }
+    shouldCleanupUploadedImage = false;
 
-  if (previousCategory && previousCategory !== updatedCategory) {
-    await Category.findByIdAndUpdate(previousCategory, {
-      $inc: { productCount: -1 },
-      $set: { updatedBy: req.user.id }
+    const updatedCategory = product.category ? product.category.toString() : null;
+    const updatedSupplier = product.supplier ? product.supplier.toString() : null;
+
+    if (updatedCategory && updatedCategory !== previousCategory) {
+      await Category.findByIdAndUpdate(updatedCategory, {
+        $inc: { productCount: 1 },
+        $set: { updatedBy: req.user.id }
+      });
+    }
+
+    if (previousCategory && previousCategory !== updatedCategory) {
+      await Category.findByIdAndUpdate(previousCategory, {
+        $inc: { productCount: -1 },
+        $set: { updatedBy: req.user.id }
+      });
+    }
+
+    if (updatedSupplier && updatedSupplier !== previousSupplier) {
+      await Supplier.findByIdAndUpdate(updatedSupplier, {
+        $addToSet: { products: product._id },
+        $set: { updatedBy: req.user.id }
+      });
+    }
+
+    if (previousSupplier && previousSupplier !== updatedSupplier) {
+      await Supplier.findByIdAndUpdate(previousSupplier, {
+        $pull: { products: product._id },
+        $set: { updatedBy: req.user.id }
+      });
+    }
+
+    if (uploadedImagePath) {
+      previousLocalImagePaths
+        .filter((imagePath) => imagePath && imagePath !== uploadedImagePath)
+        .forEach((imagePath) => removeFileFromDisk(imagePath));
+    }
+
+    res.status(200).json({
+      success: true,
+      data: product
     });
+  } catch (error) {
+    if (shouldCleanupUploadedImage && uploadedImagePath) {
+      removeFileFromDisk(uploadedImagePath);
+    }
+    throw error;
   }
-
-  if (updatedSupplier && updatedSupplier !== previousSupplier) {
-    await Supplier.findByIdAndUpdate(updatedSupplier, {
-      $addToSet: { products: product._id },
-      $set: { updatedBy: req.user.id }
-    });
-  }
-
-  if (previousSupplier && previousSupplier !== updatedSupplier) {
-    await Supplier.findByIdAndUpdate(previousSupplier, {
-      $pull: { products: product._id },
-      $set: { updatedBy: req.user.id }
-    });
-  }
-
-  res.status(200).json({
-    success: true,
-    data: product
-  });
 });
 
 // @desc    Adjust product stock
