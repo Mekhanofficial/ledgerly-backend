@@ -94,7 +94,7 @@ const limiter = rateLimit({
 });
 app.use('/api', limiter);
 
-// Static folder (allow cross-origin image loading from the frontend)
+// Static folder (allow cross-origin image loading from the frontend).
 app.use(
   '/uploads',
   express.static(path.join(__dirname, 'uploads'), {
