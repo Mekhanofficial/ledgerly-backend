@@ -1,5 +1,6 @@
 const User = require('../models/User');
 const Business = require('../models/Business');
+const Subscription = require('../models/Subscription');
 const ErrorResponse = require('../utils/errorResponse');
 const asyncHandler = require('../utils/asyncHandler');
 const sendEmail = require('../utils/email');
@@ -8,8 +9,11 @@ const path = require('path');
 const fs = require('fs');
 const { OTP_EXPIRY_MINUTES, sendVerificationOtpEmail } = require('../emailmicroservice');
 const { getDefaultPermissions } = require('../utils/rolePermissions');
+const { verifyTransaction } = require('../utils/paystack');
+const { normalizePlanId } = require('../utils/planConfig');
 const {
   startTrialForUser,
+  updateSubscriptionFromPayment,
   resolveBillingOwner,
   expireSubscriptionIfNeeded,
   syncBusinessFromUser
@@ -23,6 +27,7 @@ const parsePositiveInt = (value, fallback) => {
 const OTP_SEND_TIMEOUT_MS = parsePositiveInt(process.env.OTP_SEND_TIMEOUT_MS, 20000);
 const OTP_SAVE_TIMEOUT_MS = parsePositiveInt(process.env.OTP_SAVE_TIMEOUT_MS, 15000);
 const TRIAL_SETUP_TIMEOUT_MS = parsePositiveInt(process.env.TRIAL_SETUP_TIMEOUT_MS, 15000);
+const PAYMENT_VERIFY_TIMEOUT_MS = parsePositiveInt(process.env.PAYMENT_VERIFY_TIMEOUT_MS, 20000);
 
 const runWithTimeout = async (task, timeoutMs, timeoutMessage) => {
   const promise = Promise.resolve(task);
@@ -110,11 +115,68 @@ const issueAndSendEmailVerificationOtp = async (user) => {
   );
 };
 
+const resolveLandingSubscriptionFromPayment = async ({ reference, expectedEmail }) => {
+  const normalizedReference = String(reference || '').trim();
+  if (!normalizedReference) return null;
+
+  const existingClaim = await Subscription.findOne({
+    paystackTransactionReference: normalizedReference
+  })
+    .select('user')
+    .lean();
+
+  if (existingClaim) {
+    throw new ErrorResponse('This payment reference has already been used', 409);
+  }
+
+  const verification = await runWithTimeout(
+    verifyTransaction(normalizedReference),
+    PAYMENT_VERIFY_TIMEOUT_MS,
+    `Payment verification timed out after ${PAYMENT_VERIFY_TIMEOUT_MS}ms`
+  );
+  const paymentData = verification?.data || {};
+  const status = String(paymentData?.status || '').trim().toLowerCase();
+
+  if (status !== 'success') {
+    throw new ErrorResponse('Payment is not successful or could not be verified', 400);
+  }
+
+  const metadata = paymentData?.metadata || {};
+  const paymentType = String(metadata?.type || '').trim().toLowerCase();
+  if (paymentType !== 'landing_subscription') {
+    throw new ErrorResponse('Payment reference is not valid for plan signup', 400);
+  }
+
+  const paidEmail = normalizeEmail(metadata?.email || paymentData?.customer?.email || '');
+  const normalizedExpectedEmail = normalizeEmail(expectedEmail);
+  if (paidEmail && normalizedExpectedEmail && paidEmail !== normalizedExpectedEmail) {
+    throw new ErrorResponse('Payment email does not match the signup email', 400);
+  }
+
+  return {
+    reference: normalizedReference,
+    plan: normalizePlanId(metadata?.plan || metadata?.planId),
+    billingCycle: metadata?.billingCycle === 'yearly' ? 'yearly' : 'monthly',
+    paystackCustomerCode: paymentData?.customer?.customer_code || paymentData?.customer?.id || undefined,
+    paystackPlanCode: paymentData?.plan?.plan_code || undefined
+  };
+};
+
 // @desc    Register user
 // @route   POST /api/v1/auth/register
 // @access  Public
 exports.register = asyncHandler(async (req, res, next) => {
-  const { name, email, password, phone, businessName, currency, currencyCode, country } = req.body;
+  const {
+    name,
+    email,
+    password,
+    phone,
+    businessName,
+    currency,
+    currencyCode,
+    country,
+    paymentReference
+  } = req.body;
   const normalizedEmail = normalizeEmail(email);
 
   // Check if user exists
@@ -122,6 +184,43 @@ exports.register = asyncHandler(async (req, res, next) => {
   if (userExists) {
     if (userExists.emailVerified) {
       return next(new ErrorResponse('User already exists', 400));
+    }
+
+    let upgradedPlanContext = null;
+    if (paymentReference) {
+      const normalizedReference = String(paymentReference).trim();
+      const existingClaim = await Subscription.findOne({
+        paystackTransactionReference: normalizedReference
+      })
+        .select('user plan billingCycle')
+        .lean();
+
+      if (existingClaim && String(existingClaim.user) === String(userExists._id)) {
+        upgradedPlanContext = {
+          reference: normalizedReference,
+          plan: normalizePlanId(existingClaim.plan),
+          billingCycle: existingClaim.billingCycle === 'yearly' ? 'yearly' : 'monthly'
+        };
+      } else {
+        upgradedPlanContext = await resolveLandingSubscriptionFromPayment({
+          reference: normalizedReference,
+          expectedEmail: normalizedEmail
+        });
+        const existingBusiness = await Business.findById(userExists.business);
+        if (!existingBusiness) {
+          return next(new ErrorResponse('Business record not found for this account', 404));
+        }
+        await updateSubscriptionFromPayment({
+          user: userExists,
+          business: existingBusiness,
+          plan: upgradedPlanContext.plan,
+          billingCycle: upgradedPlanContext.billingCycle,
+          paystackCustomerCode: upgradedPlanContext.paystackCustomerCode,
+          paystackPlanCode: upgradedPlanContext.paystackPlanCode,
+          paystackTransactionReference: upgradedPlanContext.reference
+        });
+        await syncBusinessFromUser(userExists);
+      }
     }
 
     let otpSent = true;
@@ -143,10 +242,22 @@ exports.register = asyncHandler(async (req, res, next) => {
         email: userExists.email,
         expiresInMinutes: OTP_EXPIRY_MINUTES,
         otpSent,
-        otpError: otpSent ? undefined : otpErrorMessage
+        otpError: otpSent ? undefined : otpErrorMessage,
+        subscription: upgradedPlanContext
+          ? {
+            plan: upgradedPlanContext.plan,
+            billingCycle: upgradedPlanContext.billingCycle,
+            reference: upgradedPlanContext.reference
+          }
+          : undefined
       }
     });
   }
+
+  const paidSubscriptionContext = await resolveLandingSubscriptionFromPayment({
+    reference: paymentReference,
+    expectedEmail: normalizedEmail
+  });
 
   // Create business
   const resolvedCurrency = (currencyCode || currency || 'USD').toString().trim().toUpperCase();
@@ -182,16 +293,39 @@ exports.register = asyncHandler(async (req, res, next) => {
   business.owner = user._id;
   await business.save();
 
-  // Start free trial for new accounts without blocking registration indefinitely.
-  try {
-    await runWithTimeout(
-      startTrialForUser({ user, business }),
-      TRIAL_SETUP_TIMEOUT_MS,
-      `Trial setup timed out after ${TRIAL_SETUP_TIMEOUT_MS}ms`
-    );
-  } catch (trialError) {
-    console.error('Trial setup failed during registration:', trialError?.message || trialError);
+  if (paidSubscriptionContext) {
+    try {
+      await runWithTimeout(
+        updateSubscriptionFromPayment({
+          user,
+          business,
+          plan: paidSubscriptionContext.plan,
+          billingCycle: paidSubscriptionContext.billingCycle,
+          paystackCustomerCode: paidSubscriptionContext.paystackCustomerCode,
+          paystackPlanCode: paidSubscriptionContext.paystackPlanCode,
+          paystackTransactionReference: paidSubscriptionContext.reference
+        }),
+        TRIAL_SETUP_TIMEOUT_MS,
+        `Paid subscription setup timed out after ${TRIAL_SETUP_TIMEOUT_MS}ms`
+      );
+    } catch (subscriptionError) {
+      console.error('Paid subscription setup failed during registration:', subscriptionError?.message || subscriptionError);
+      return next(new ErrorResponse('Unable to apply paid plan during signup. Please contact support.', 500));
+    }
+  } else {
+    // Start free trial for new accounts without blocking registration indefinitely.
+    try {
+      await runWithTimeout(
+        startTrialForUser({ user, business }),
+        TRIAL_SETUP_TIMEOUT_MS,
+        `Trial setup timed out after ${TRIAL_SETUP_TIMEOUT_MS}ms`
+      );
+    } catch (trialError) {
+      console.error('Trial setup failed during registration:', trialError?.message || trialError);
+    }
   }
+
+  await syncBusinessFromUser(user);
 
   let otpSent = true;
   let otpErrorMessage = '';
@@ -204,16 +338,27 @@ exports.register = asyncHandler(async (req, res, next) => {
     console.error('Failed to send registration OTP:', otpErrorMessage);
   }
 
+  const accountCreatedMessage = paidSubscriptionContext
+    ? `Account created. ${paidSubscriptionContext.plan} plan has been activated.`
+    : 'Account created.';
+
   res.status(201).json({
     success: true,
     message: otpSent
-      ? 'Account created. A verification code has been sent to your email.'
-      : 'Account created, but we could not send verification code right now. Please use resend OTP.',
+      ? `${accountCreatedMessage} A verification code has been sent to your email.`
+      : `${accountCreatedMessage} We could not send verification code right now. Please use resend OTP.`,
     data: {
       email: user.email,
       expiresInMinutes: OTP_EXPIRY_MINUTES,
       otpSent,
-      otpError: otpSent ? undefined : otpErrorMessage
+      otpError: otpSent ? undefined : otpErrorMessage,
+      subscription: paidSubscriptionContext
+        ? {
+          plan: paidSubscriptionContext.plan,
+          billingCycle: paidSubscriptionContext.billingCycle,
+          reference: paidSubscriptionContext.reference
+        }
+        : undefined
     }
   });
 });

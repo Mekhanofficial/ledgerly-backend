@@ -8,6 +8,7 @@ const {
 } = require('../controllers/paymentController');
 const {
   initializeSubscriptionPayment,
+  initializePublicSubscriptionPayment,
   initializeTemplatePayment,
   verifyPayment,
   paymentCallbackBridge,
@@ -20,6 +21,7 @@ const { protect, authorize } = require('../middleware/auth');
 router.post('/webhook', paystackWebhook);
 router.get('/callback', paymentCallbackBridge);
 router.get('/verify', verifyPublicInvoicePayment);
+router.post('/initialize-public-subscription', initializePublicSubscriptionPayment);
 
 router.use(protect);
 

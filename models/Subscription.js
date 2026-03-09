@@ -34,7 +34,8 @@ const SubscriptionSchema = new mongoose.Schema({
   expiresAt: Date,
   paystackCustomerCode: String,
   paystackSubscriptionCode: String,
-  paystackPlanCode: String
+  paystackPlanCode: String,
+  paystackTransactionReference: String
 }, {
   timestamps: true
 });
@@ -48,5 +49,6 @@ SubscriptionSchema.pre('save', function(next) {
 
 SubscriptionSchema.index({ business: 1, status: 1 });
 SubscriptionSchema.index({ user: 1, status: 1 });
+SubscriptionSchema.index({ paystackTransactionReference: 1 }, { unique: true, sparse: true });
 
 module.exports = mongoose.model('Subscription', SubscriptionSchema);

@@ -281,7 +281,8 @@ const updateSubscriptionFromPayment = async ({
   billingCycle = 'monthly',
   paystackCustomerCode,
   paystackSubscriptionCode,
-  paystackPlanCode
+  paystackPlanCode,
+  paystackTransactionReference
 }) => {
   const now = new Date();
   const cycleDays = billingCycle === 'yearly' ? 365 : 30;
@@ -309,21 +310,27 @@ const updateSubscriptionFromPayment = async ({
     await business.save();
   }
 
+  const subscriptionUpdate = {
+    user: user._id,
+    business: user.business,
+    plan: normalizedPlan,
+    billingCycle,
+    status: 'active',
+    subscriptionStart: now,
+    subscriptionEnd: subscriptionEndsAt,
+    expiresAt: subscriptionEndsAt,
+    paystackCustomerCode: paystackCustomerCode || undefined,
+    paystackSubscriptionCode: paystackSubscriptionCode || undefined,
+    paystackPlanCode: paystackPlanCode || undefined
+  };
+
+  if (paystackTransactionReference) {
+    subscriptionUpdate.paystackTransactionReference = paystackTransactionReference;
+  }
+
   const subscription = await Subscription.findOneAndUpdate(
     { business: user.business },
-    {
-      user: user._id,
-      business: user.business,
-      plan: normalizedPlan,
-      billingCycle,
-      status: 'active',
-      subscriptionStart: now,
-      subscriptionEnd: subscriptionEndsAt,
-      expiresAt: subscriptionEndsAt,
-      paystackCustomerCode: paystackCustomerCode || undefined,
-      paystackSubscriptionCode: paystackSubscriptionCode || undefined,
-      paystackPlanCode: paystackPlanCode || undefined
-    },
+    subscriptionUpdate,
     { upsert: true, new: true, setDefaultsOnInsert: true }
   );
 

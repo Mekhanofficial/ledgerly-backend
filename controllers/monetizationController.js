@@ -62,6 +62,16 @@ const getBackendBaseUrl = (req) => {
 };
 
 const getCallbackUrl = (req) => `${getBackendBaseUrl(req)}/api/v1/payments/callback`;
+const isValidEmail = (value) => /^\S+@\S+\.\S+$/.test(String(value || '').trim().toLowerCase());
+const toSafeEmail = (value) => String(value || '').trim().toLowerCase();
+const getLandingSignupCallbackUrl = (req, { plan, billingCycle, email }) => {
+  const callback = new URL('/api/v1/payments/callback', `${getBackendBaseUrl(req)}/`);
+  callback.searchParams.set('flow', 'landing-signup');
+  callback.searchParams.set('plan', plan);
+  callback.searchParams.set('billingCycle', billingCycle);
+  callback.searchParams.set('email', toSafeEmail(email));
+  return callback.toString();
+};
 
 const ensureBillingOwner = async (req) => {
   if (req.billingOwner) return req.billingOwner;
@@ -128,6 +138,15 @@ const applyPaystackMetadata = async (payload, req) => {
   const type = String(metadata.type || '').trim().toLowerCase();
   const userId = metadata.userId || metadata.user;
   const businessId = metadata.businessId || metadata.business;
+
+  if (type === 'landing_subscription') {
+    return {
+      type: 'landing_subscription',
+      plan: normalizePlanId(metadata.plan || metadata.planId),
+      billingCycle: metadata.billingCycle === 'yearly' ? 'yearly' : 'monthly',
+      email: toSafeEmail(metadata.email)
+    };
+  }
 
   let user = null;
   if (userId) {
@@ -211,11 +230,48 @@ exports.paymentCallbackBridge = asyncHandler(async (req, res, next) => {
     );
   }
 
-  const redirectUrl = new URL('/payments/callback', `${frontendBaseUrl}/`);
-  Object.entries(req.query || {}).forEach(([key, value]) => {
-    if (value === undefined || value === null) return;
-    redirectUrl.searchParams.set(key, String(value));
-  });
+  const flow = String(req.query?.flow || '').trim().toLowerCase();
+  const isLandingSignupFlow = flow === 'landing-signup';
+  const redirectPath = isLandingSignupFlow ? '/signup' : '/payments/callback';
+  const redirectUrl = new URL(redirectPath, `${frontendBaseUrl}/`);
+
+  if (isLandingSignupFlow) {
+    const requestedPlan = String(req.query?.plan || '').trim();
+    const plan = requestedPlan ? normalizePlanId(requestedPlan) : '';
+    const billingCycle = req.query?.billingCycle === 'yearly' ? 'yearly' : 'monthly';
+    const email = toSafeEmail(req.query?.email);
+    const reference =
+      req.query?.reference
+      || req.query?.trxref
+      || req.query?.ref;
+    let paymentSucceeded = false;
+
+    if (reference) {
+      try {
+        const verification = await verifyTransaction(String(reference));
+        paymentSucceeded = String(verification?.data?.status || '').toLowerCase() === 'success';
+      } catch (error) {
+        paymentSucceeded = false;
+      }
+    }
+
+    if (plan) {
+      redirectUrl.searchParams.set('selectedPlan', plan);
+      redirectUrl.searchParams.set('billingCycle', billingCycle);
+    }
+    if (email && isValidEmail(email)) {
+      redirectUrl.searchParams.set('checkoutEmail', email);
+    }
+    if (reference) {
+      redirectUrl.searchParams.set('reference', String(reference));
+    }
+    redirectUrl.searchParams.set('paid', paymentSucceeded ? '1' : '0');
+  } else {
+    Object.entries(req.query || {}).forEach(([key, value]) => {
+      if (value === undefined || value === null) return;
+      redirectUrl.searchParams.set(key, String(value));
+    });
+  }
 
   res.redirect(302, redirectUrl.toString());
 });
@@ -259,6 +315,54 @@ exports.initializeSubscriptionPayment = asyncHandler(async (req, res, next) => {
   }
 
   const response = await initializeTransaction(payload);
+
+  res.status(200).json({
+    success: true,
+    data: {
+      authorizationUrl: response?.data?.authorization_url,
+      accessCode: response?.data?.access_code,
+      reference: response?.data?.reference,
+      amount,
+      currency
+    }
+  });
+});
+
+// @desc    Initialize subscription payment from landing page (no auth)
+// @route   POST /api/v1/payments/initialize-public-subscription
+// @access  Public
+exports.initializePublicSubscriptionPayment = asyncHandler(async (req, res, next) => {
+  const email = toSafeEmail(req.body?.email);
+  const plan = normalizePlanId(req.body?.plan);
+  const billingCycle = req.body?.billingCycle === 'yearly' ? 'yearly' : 'monthly';
+
+  if (!isValidEmail(email)) {
+    return next(new ErrorResponse('A valid email is required for checkout', 400));
+  }
+
+  if (!PLAN_DEFINITIONS[plan]) {
+    return next(new ErrorResponse('Invalid subscription plan', 400));
+  }
+
+  const planDef = PLAN_DEFINITIONS[plan];
+  const amount = billingCycle === 'yearly' ? planDef.yearlyPrice : planDef.monthlyPrice;
+  const currency = resolveCurrency('NGN');
+  const reference = `pubsub_${Date.now()}_${Math.floor(Math.random() * 1000000)}`;
+
+  const response = await initializeTransaction({
+    email,
+    amount: toMinorUnits(amount),
+    currency,
+    reference,
+    callback_url: getLandingSignupCallbackUrl(req, { plan, billingCycle, email }),
+    metadata: {
+      type: 'landing_subscription',
+      plan,
+      billingCycle,
+      email,
+      source: 'landing'
+    }
+  });
 
   res.status(200).json({
     success: true,
