@@ -48,6 +48,13 @@ const errorHandler = (err, req, res, next) => {
     }
   }
 
+  if (err.type === 'entity.too.large') {
+    error = new ErrorResponse(
+      'Request payload is too large. Please reduce attachment size and try again.',
+      413
+    );
+  }
+
   res.status(error.statusCode || 500).json({
     success: false,
     error: error.message || 'Server Error'

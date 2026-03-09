@@ -19,7 +19,7 @@ dotenv.config();
 connectDB();
 
 const app = express();
-const REQUEST_BODY_LIMIT = process.env.REQUEST_BODY_LIMIT || '10mb';
+const REQUEST_BODY_LIMIT = process.env.REQUEST_BODY_LIMIT || '25mb';
 
 // Body parser (capture raw body for webhook verification)
 app.use(express.json({
