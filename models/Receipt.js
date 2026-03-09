@@ -73,6 +73,7 @@ const ReceiptSchema = new mongoose.Schema({
     required: true
   },
   paymentReference: String,
+  emailSentAt: Date,
   templateStyle: {
     type: String,
     default: 'standard'
