@@ -14,13 +14,17 @@ const {
   paymentCallbackBridge,
   paystackWebhook
 } = require('../controllers/monetizationController');
-const { verifyPublicInvoicePayment } = require('../controllers/invoicePaymentController');
+const {
+  verifyPublicInvoicePayment,
+  sendPublicInvoiceReceiptEmail
+} = require('../controllers/invoicePaymentController');
 const { protect, authorize } = require('../middleware/auth');
 
 // Paystack webhook (no auth)
 router.post('/webhook', paystackWebhook);
 router.get('/callback', paymentCallbackBridge);
 router.get('/verify', verifyPublicInvoicePayment);
+router.post('/public-receipt/email', sendPublicInvoiceReceiptEmail);
 router.post('/initialize-public-subscription', initializePublicSubscriptionPayment);
 
 router.use(protect);

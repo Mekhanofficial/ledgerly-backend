@@ -6,7 +6,6 @@ const Receipt = require('../models/Receipt');
 const ErrorResponse = require('../utils/errorResponse');
 const asyncHandler = require('../utils/asyncHandler');
 const sendEmail = require('../utils/email');
-const generatePDF = require('../utils/generatePDF');
 const {
   initializeBusinessTransaction,
   verifyBusinessTransaction,
@@ -18,6 +17,12 @@ const TERMINAL_INVOICE_STATUSES = new Set(['paid', 'cancelled', 'void']);
 
 const toMinorUnits = (amount) => Math.round(Number(amount || 0) * 100);
 const toMajorUnits = (amount) => Number((Number(amount || 0) / 100).toFixed(2));
+const MAX_CLIENT_EMAIL_PDF_BYTES = Number.parseInt(
+  String(process.env.MAX_CLIENT_EMAIL_PDF_BYTES || ''),
+  10
+) > 0
+  ? Number.parseInt(String(process.env.MAX_CLIENT_EMAIL_PDF_BYTES), 10)
+  : 15 * 1024 * 1024;
 const sanitizeAttachmentFileName = (value, fallback = 'receipt.pdf') => {
   const candidate = String(value || '')
     .trim()
@@ -25,24 +30,58 @@ const sanitizeAttachmentFileName = (value, fallback = 'receipt.pdf') => {
   if (!candidate) return fallback;
   return candidate.toLowerCase().endsWith('.pdf') ? candidate : `${candidate}.pdf`;
 };
+const decodeBase64PdfBuffer = (value) => {
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+  const normalized = raw.includes('base64,') ? raw.split('base64,').pop() : raw;
+  if (!normalized) return null;
+  try {
+    const buffer = Buffer.from(normalized, 'base64');
+    return buffer.length > 0 ? buffer : null;
+  } catch {
+    return null;
+  }
+};
+const resolveFrontendPdfAttachment = (payload = {}, defaultFileName = 'receipt.pdf') => {
+  const attachment = payload?.pdfAttachment;
+  if (!attachment || typeof attachment !== 'object') {
+    return null;
+  }
+
+  const encoding = String(attachment.encoding || 'base64').trim().toLowerCase();
+  if (encoding && encoding !== 'base64') {
+    return null;
+  }
+
+  const buffer = decodeBase64PdfBuffer(
+    attachment.data || attachment.content || attachment.base64 || attachment.base64Data
+  );
+  if (!buffer) {
+    return null;
+  }
+
+  if (buffer.length > MAX_CLIENT_EMAIL_PDF_BYTES) {
+    throw new ErrorResponse(
+      `Attached PDF is too large. Maximum allowed size is ${Math.round(MAX_CLIENT_EMAIL_PDF_BYTES / (1024 * 1024))}MB`,
+      413
+    );
+  }
+
+  if (buffer.slice(0, 4).toString('utf8') !== '%PDF') {
+    return null;
+  }
+
+  return {
+    buffer,
+    fileName: sanitizeAttachmentFileName(attachment.fileName || attachment.filename, defaultFileName),
+    source: String(attachment.source || 'frontend').trim().toLowerCase()
+  };
+};
 const formatDisplayDate = (value) => {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return '';
   return date.toLocaleDateString();
 };
-const resolveCustomerName = (invoice, receipt) =>
-  receipt?.customer?.name
-  || invoice?.customer?.name
-  || 'Customer';
-const resolveCustomerEmail = (invoice, receipt) =>
-  String(
-    invoice?.clientEmail
-    || receipt?.customer?.email
-    || invoice?.customer?.email
-    || ''
-  )
-    .trim()
-    .toLowerCase();
 
 const getFrontendBaseUrl = (req) =>
   (process.env.APP_BASE_URL
@@ -129,7 +168,7 @@ const loadPublicInvoice = async (slug) => {
     publicAccessEnabled: { $ne: false }
   })
     .populate('customer', 'name email')
-    .populate('business', 'name email currency paystack');
+    .populate('business', 'name email phone address currency paystack');
 };
 
 const loadInvoiceByReference = async (reference) => {
@@ -204,7 +243,13 @@ const validateVerifiedAmountAndCurrency = async (invoice, paystackData, referenc
   return existingPayment;
 };
 
-const maybeSendConfirmationEmails = async (invoice, business, reference, amount) => {
+const maybeSendConfirmationEmails = async (
+  invoice,
+  business,
+  reference,
+  amount,
+  options = {}
+) => {
   if (invoice.paymentConfirmationEmailsSentAt) return;
 
   try {
@@ -212,7 +257,8 @@ const maybeSendConfirmationEmails = async (invoice, business, reference, amount)
       invoice,
       business,
       reference,
-      amount
+      amount,
+      ...options
     });
     invoice.paymentConfirmationEmailsSentAt = new Date();
     await invoice.save();
@@ -221,7 +267,7 @@ const maybeSendConfirmationEmails = async (invoice, business, reference, amount)
   }
 };
 
-const maybeGenerateAndSendPaidInvoiceReceipt = async ({
+const maybeCreatePaidInvoiceReceipt = async ({
   invoice,
   business,
   paystackData,
@@ -237,6 +283,82 @@ const maybeGenerateAndSendPaidInvoiceReceipt = async ({
     return null;
   }
 
+  const existingReceipt = await Receipt.findOne({
+    business: businessId,
+    invoice: invoice._id
+  })
+    .sort({ createdAt: -1 });
+  if (existingReceipt) {
+    return existingReceipt;
+  }
+
+  const resolvedTemplateStyle = String(
+    invoice?.templateStyle || 'standard'
+  )
+    .trim() || 'standard';
+
+  if (!business || typeof business.getNextReceiptNumber !== 'function') {
+    return null;
+  }
+
+  const receiptPayload = {
+    business: businessId,
+    invoice: invoice._id,
+    customer: customerId,
+    receiptNumber: await business.getNextReceiptNumber(),
+    date: paystackData?.paid_at ? new Date(paystackData.paid_at) : new Date(),
+    items: invoice.items || [],
+    subtotal: Number(invoice.subtotal || 0),
+    tax: invoice.tax || {},
+    taxName: invoice.taxName || invoice.tax?.description,
+    taxRateUsed: invoice.taxRateUsed ?? invoice.tax?.percentage,
+    taxAmount: invoice.taxAmount ?? invoice.tax?.amount,
+    isTaxOverridden: Boolean(invoice.isTaxOverridden),
+    total: Number(invoice.total || 0),
+    amountPaid: Number(invoice.amountPaid || 0),
+    paymentMethod: invoice.paymentMethod || 'online',
+    paymentReference: reference || invoice.paymentReference || '',
+    templateStyle: resolvedTemplateStyle,
+    createdBy: invoice.createdBy || undefined
+  };
+
+  try {
+    return await Receipt.create(receiptPayload);
+  } catch (error) {
+    const fallbackReceipt = await Receipt.findOne({
+      business: businessId,
+      invoice: invoice._id
+    }).sort({ createdAt: -1 });
+    if (fallbackReceipt) {
+      return fallbackReceipt;
+    }
+    throw error;
+  }
+};
+
+const sendPublicPaidInvoiceReceiptEmail = async ({
+  invoice,
+  reference,
+  pdfAttachment,
+  templateStyle
+}) => {
+  const businessId = invoice?.business?._id || invoice?.business;
+  if (!businessId) {
+    throw new ErrorResponse('Business not found for this invoice', 404);
+  }
+
+  const customerEmail = String(invoice?.clientEmail || invoice?.customer?.email || '')
+    .trim()
+    .toLowerCase();
+  if (!customerEmail) {
+    throw new ErrorResponse('Customer email is required to send this receipt', 400);
+  }
+
+  const business = await Business.findById(businessId);
+  if (!business) {
+    throw new ErrorResponse('Business not found', 404);
+  }
+
   let receipt = await Receipt.findOne({
     business: businessId,
     invoice: invoice._id
@@ -245,138 +367,93 @@ const maybeGenerateAndSendPaidInvoiceReceipt = async ({
     .populate('customer', 'name email')
     .populate('invoice', 'invoiceNumber currency');
 
-  const resolvedTemplateStyle = String(
-    invoice?.templateStyle || receipt?.templateStyle || 'standard'
-  )
-    .trim() || 'standard';
-
   if (!receipt) {
-    const receiptPayload = {
-      business: businessId,
-      invoice: invoice._id,
-      customer: customerId,
-      receiptNumber: await business.getNextReceiptNumber(),
-      date: paystackData?.paid_at ? new Date(paystackData.paid_at) : new Date(),
-      items: invoice.items || [],
-      subtotal: Number(invoice.subtotal || 0),
-      tax: invoice.tax || {},
-      taxName: invoice.taxName || invoice.tax?.description,
-      taxRateUsed: invoice.taxRateUsed ?? invoice.tax?.percentage,
-      taxAmount: invoice.taxAmount ?? invoice.tax?.amount,
-      isTaxOverridden: Boolean(invoice.isTaxOverridden),
-      total: Number(invoice.total || 0),
-      amountPaid: Number(invoice.amountPaid || 0),
-      paymentMethod: invoice.paymentMethod || 'online',
-      paymentReference: reference || invoice.paymentReference || '',
-      templateStyle: resolvedTemplateStyle,
-      createdBy: invoice.createdBy || undefined
-    };
+    const businessWithSecret = await loadBusinessWithSecret(businessId);
+    const created = await maybeCreatePaidInvoiceReceipt({
+      invoice,
+      business: businessWithSecret || business,
+      paystackData: null,
+      reference
+    });
 
-    try {
-      receipt = await Receipt.create(receiptPayload);
-    } catch (error) {
-      const existingReceipt = await Receipt.findOne({
-        business: businessId,
-        invoice: invoice._id
-      })
-        .sort({ createdAt: -1 })
+    if (created?._id) {
+      receipt = await Receipt.findById(created._id)
         .populate('customer', 'name email')
         .populate('invoice', 'invoiceNumber currency');
-
-      if (!existingReceipt) {
-        throw error;
-      }
-      receipt = existingReceipt;
     }
   }
 
-  if (!receipt?.customer?.email || !receipt?.invoice?.invoiceNumber) {
-    receipt = await Receipt.findById(receipt._id)
-      .populate('customer', 'name email')
-      .populate('invoice', 'invoiceNumber currency');
+  if (!receipt) {
+    throw new ErrorResponse('Unable to create receipt for this payment', 500);
   }
 
-  if (!receipt || receipt.emailSentAt) {
-    return receipt;
+  if (receipt.emailSentAt) {
+    return { receipt, alreadySent: true };
   }
 
-  const customerEmail = resolveCustomerEmail(invoice, receipt);
-  if (!customerEmail) {
-    console.warn('Skipping auto receipt email because customer email is missing', {
-      invoiceId: invoice._id?.toString?.() || invoice._id
-    });
-    return receipt;
-  }
-
-  const businessRecord = business?.toObject ? business.toObject() : (business || {});
-  const customerName = resolveCustomerName(invoice, receipt);
-  const resolvedCurrency = String(
-    invoice.currency || receipt?.invoice?.currency || businessRecord.currency || 'USD'
-  ).toUpperCase();
-
-  const receiptForPdf = {
-    ...(receipt.toObject ? receipt.toObject() : receipt),
-    business: {
-      ...businessRecord,
-      name: businessRecord.name || invoice?.business?.name || 'Business',
-      address: businessRecord.address || {},
-      phone: businessRecord.phone || ''
-    },
-    customer: {
-      name: customerName,
-      email: customerEmail
-    },
-    invoice: {
-      _id: invoice._id,
-      invoiceNumber: invoice.invoiceNumber || receipt?.invoice?.invoiceNumber || 'N/A',
-      currency: resolvedCurrency
-    },
-    currency: resolvedCurrency,
-    templateStyle: receipt.templateStyle || resolvedTemplateStyle
-  };
-
-  const receiptPDF = await generatePDF.receipt(receiptForPdf);
+  const resolvedTemplateStyle = String(
+    templateStyle || invoice?.templateStyle || receipt?.templateStyle || 'standard'
+  ).trim() || 'standard';
   const attachmentFileName = sanitizeAttachmentFileName(`receipt-${receipt.receiptNumber}.pdf`);
-  const amountPaidText = `${Number(receipt.amountPaid || invoice.amountPaid || 0).toFixed(2)} ${resolvedCurrency}`;
-  const paymentDate = formatDisplayDate(
-    paystackData?.paid_at
-    || invoice.paidDate
-    || receipt.date
-    || receipt.createdAt
+  const frontendPdfAttachment = resolveFrontendPdfAttachment(
+    { pdfAttachment },
+    attachmentFileName
   );
+
+  if (!frontendPdfAttachment?.buffer) {
+    throw new ErrorResponse('A valid frontend PDF attachment is required to send this receipt', 400);
+  }
+
+  const customerName =
+    receipt.customer?.name
+    || invoice?.customer?.name
+    || 'Customer';
+  const paymentDate = formatDisplayDate(
+    invoice?.paidDate
+    || receipt?.date
+    || receipt?.createdAt
+    || new Date()
+  );
+  const resolvedCurrency = String(
+    invoice?.currency
+    || receipt?.invoice?.currency
+    || business?.currency
+    || 'USD'
+  ).toUpperCase();
+  const amountPaidValue = Number(receipt.amountPaid || invoice.amountPaid || invoice.total || 0);
+  const amountPaidText = `${amountPaidValue.toFixed(2)} ${resolvedCurrency}`;
+  const invoiceNumber = invoice?.invoiceNumber || receipt?.invoice?.invoiceNumber || 'N/A';
 
   await sendEmail({
     businessId,
     to: customerEmail,
-    subject: `Receipt for Invoice ${invoice.invoiceNumber}`,
-    text: `Receipt ${receipt.receiptNumber} for invoice ${invoice.invoiceNumber}. Amount paid: ${amountPaidText}.`,
+    subject: `Receipt for Invoice ${invoiceNumber}`,
+    text: `Receipt ${receipt.receiptNumber} for invoice ${invoiceNumber}. Amount paid: ${amountPaidText}.`,
     template: 'receipt',
     context: {
       customerName,
-      businessName: businessRecord.name || invoice?.business?.name || 'Business',
+      businessName: business?.name || 'Business',
       receiptNumber: receipt.receiptNumber,
-      invoiceNumber: invoice.invoiceNumber || receipt?.invoice?.invoiceNumber || 'N/A',
+      invoiceNumber,
       paymentDate,
       amountPaid: amountPaidText,
-      paymentMethod: invoice.paymentMethod || 'online'
+      paymentMethod: receipt.paymentMethod || invoice.paymentMethod || 'online'
     },
     attachments: [{
-      filename: attachmentFileName,
-      content: receiptPDF,
+      filename: frontendPdfAttachment.fileName || attachmentFileName,
+      content: frontendPdfAttachment.buffer,
       contentType: 'application/pdf'
     }]
   });
 
   receipt.emailSentAt = new Date();
+  receipt.templateStyle = resolvedTemplateStyle;
   if (!receipt.paymentReference) {
-    receipt.paymentReference = reference || invoice.paymentReference || '';
-  }
-  if (!receipt.templateStyle) {
-    receipt.templateStyle = resolvedTemplateStyle;
+    receipt.paymentReference = reference || invoice?.paymentReference || '';
   }
   await receipt.save();
 
-  return receipt;
+  return { receipt, alreadySent: false };
 };
 
 const applyVerifiedInvoicePayment = async ({
@@ -405,16 +482,19 @@ const applyVerifiedInvoicePayment = async ({
       invoice.lastPaymentEventType = 'charge.success';
       await invoice.save();
     }
-    await maybeSendConfirmationEmails(invoice, business, reference, existingPayment.amount);
+    await maybeSendConfirmationEmails(invoice, business, reference, existingPayment.amount, {
+      notifyCustomer: false,
+      notifyBusiness: true
+    });
     try {
-      await maybeGenerateAndSendPaidInvoiceReceipt({
+      await maybeCreatePaidInvoiceReceipt({
         invoice,
         business,
         paystackData,
         reference
       });
     } catch (error) {
-      console.error('Failed to auto-generate/send receipt for paid invoice:', error?.message || error);
+      console.error('Failed to auto-create receipt for paid invoice:', error?.message || error);
     }
     return { invoice, payment: existingPayment, isDuplicate: true };
   }
@@ -470,16 +550,19 @@ const applyVerifiedInvoicePayment = async ({
     }
   }
 
-  await maybeSendConfirmationEmails(invoice, business, reference, safeAmountToApply);
+  await maybeSendConfirmationEmails(invoice, business, reference, safeAmountToApply, {
+    notifyCustomer: false,
+    notifyBusiness: true
+  });
   try {
-    await maybeGenerateAndSendPaidInvoiceReceipt({
+    await maybeCreatePaidInvoiceReceipt({
       invoice,
       business,
       paystackData,
       reference
     });
   } catch (error) {
-    console.error('Failed to auto-generate/send receipt for paid invoice:', error?.message || error);
+    console.error('Failed to auto-create receipt for paid invoice:', error?.message || error);
   }
 
   return { invoice, payment, isDuplicate: false };
@@ -561,6 +644,9 @@ const initializePublicInvoicePayment = async ({ req, invoice }) => {
 const buildPublicInvoicePayload = (req, invoice, businessWithSecret = null) => {
   const amountDue = Number(invoice?.balance ?? 0);
   const total = Number(invoice?.total ?? 0);
+  const subtotal = Number(invoice?.subtotal ?? 0);
+  const taxAmount = Number(invoice?.taxAmount ?? invoice?.tax?.amount ?? 0);
+  const amountPaid = Number(invoice?.amountPaid ?? 0);
   const customerName = invoice?.customer?.name || 'Customer';
   const customerEmail = invoice?.clientEmail || invoice?.customer?.email || '';
   const status = String(invoice?.status || '').toLowerCase();
@@ -597,9 +683,25 @@ const buildPublicInvoicePayload = (req, invoice, businessWithSecret = null) => {
     currency: invoice.currency || business.currency || 'NGN',
     amountDue,
     total,
+    subtotal,
+    taxAmount,
+    taxRateUsed: Number(invoice?.taxRateUsed ?? invoice?.tax?.percentage ?? 0),
+    taxName: invoice?.taxName || invoice?.tax?.description || 'Tax',
+    amountPaid,
+    templateStyle: invoice?.templateStyle || 'standard',
     dueDate: invoice.dueDate,
     issueDate: invoice.date,
     notes: invoice.notes || '',
+    transactionReference: invoice?.transactionReference || '',
+    paymentReference: invoice?.paymentReference || '',
+    items: Array.isArray(invoice?.items)
+      ? invoice.items.map((item) => ({
+          description: item?.description || '',
+          quantity: Number(item?.quantity || 0),
+          unitPrice: Number(item?.unitPrice || 0),
+          total: Number(item?.total || 0)
+        }))
+      : [],
     customer: {
       name: customerName,
       email: customerEmail
@@ -845,6 +947,49 @@ exports.verifyPublicInvoicePayment = asyncHandler(async (req, res, next) => {
       error?.statusCode || 400
     );
   }
+});
+
+// @desc    Send public paid-invoice receipt email using frontend-rendered PDF attachment
+// @route   POST /api/v1/payments/public-receipt/email
+// @access  Public
+exports.sendPublicInvoiceReceiptEmail = asyncHandler(async (req, res, next) => {
+  const reference = String(req.body?.reference || '').trim();
+  if (!reference) {
+    return next(new ErrorResponse('Reference is required', 400));
+  }
+
+  const invoice = await loadInvoiceByReference(reference);
+  if (!invoice) {
+    return next(new ErrorResponse('Invoice not found', 404));
+  }
+
+  const isPaid = String(invoice.status || '').toLowerCase() === 'paid' || Number(invoice.balance || 0) <= 0;
+  if (!isPaid) {
+    return next(new ErrorResponse('Invoice payment is not completed', 400));
+  }
+
+  const receiptResult = await sendPublicPaidInvoiceReceiptEmail({
+    invoice,
+    reference,
+    pdfAttachment: req.body?.pdfAttachment,
+    templateStyle: req.body?.templateStyle
+  });
+
+  const receipt = receiptResult?.receipt;
+  return res.status(200).json({
+    success: true,
+    data: {
+      alreadySent: Boolean(receiptResult?.alreadySent),
+      receipt: receipt
+        ? {
+            id: receipt._id,
+            receiptNumber: receipt.receiptNumber,
+            templateStyle: receipt.templateStyle,
+            emailSentAt: receipt.emailSentAt
+          }
+        : null
+    }
+  });
 });
 
 // @desc    Paystack webhook for business-owned invoice payments

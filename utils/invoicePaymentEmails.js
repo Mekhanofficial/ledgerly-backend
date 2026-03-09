@@ -20,6 +20,7 @@ const toDateText = (value) => {
   if (Number.isNaN(date.getTime())) return String(value);
   return date.toLocaleDateString();
 };
+const normalizeEmail = (value) => String(value || '').trim().toLowerCase();
 
 const resolveBusinessId = (invoice, business) => (
   business?._id
@@ -57,16 +58,24 @@ const sendInvoicePaymentLinkEmail = async ({ invoice, business, customerEmail, c
   });
 };
 
-const sendInvoicePaymentConfirmationEmails = async ({ invoice, business, reference, amount }) => {
+const sendInvoicePaymentConfirmationEmails = async ({
+  invoice,
+  business,
+  reference,
+  amount,
+  notifyCustomer = true,
+  notifyBusiness = true
+}) => {
   const invoiceNumber = invoice?.invoiceNumber || 'Invoice';
   const businessName = business?.name || 'Business';
   const amountText = formatAmount(amount ?? invoice?.total ?? 0, invoice?.currency);
-  const clientEmail = invoice?.clientEmail || invoice?.customer?.email;
+  const clientEmail = normalizeEmail(invoice?.clientEmail || invoice?.customer?.email);
+  const businessEmail = normalizeEmail(business?.email);
   const businessId = resolveBusinessId(invoice, business);
 
   const jobs = [];
 
-  if (clientEmail) {
+  if (notifyCustomer && clientEmail) {
     jobs.push(sendEmail({
       businessId,
       to: clientEmail,
@@ -80,10 +89,10 @@ const sendInvoicePaymentConfirmationEmails = async ({ invoice, business, referen
     }));
   }
 
-  if (business?.email) {
+  if (notifyBusiness && businessEmail && businessEmail !== clientEmail) {
     jobs.push(sendEmail({
       businessId,
-      to: business.email,
+      to: businessEmail,
       subject: `Invoice Paid - ${invoiceNumber}`,
       html: `
         <h2>Invoice Paid</h2>
