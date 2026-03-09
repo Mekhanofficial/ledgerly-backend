@@ -37,15 +37,15 @@ router.get(
 );
 
 router.post(
-  '/:id/purchase',
-  authorize('admin', 'accountant'),
-  purchaseTemplate
-);
-
-router.post(
   '/bundle/purchase',
   authorize('admin', 'accountant'),
   purchaseTemplateBundle
+);
+
+router.post(
+  '/:id/purchase',
+  authorize('admin', 'accountant'),
+  purchaseTemplate
 );
 
 module.exports = router;

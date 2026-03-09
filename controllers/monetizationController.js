@@ -33,6 +33,15 @@ const {
 } = require('../utils/subscriptionService');
 
 const toMinorUnits = (amount) => Math.round(Number(amount) * 100);
+const parseBooleanFlag = (value) => {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return value === 1;
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    return normalized === 'true' || normalized === '1' || normalized === 'yes' || normalized === 'on';
+  }
+  return false;
+};
 
 const resolveTemplateById = (templateId) => templateCatalog.find((item) => item.id === templateId);
 
@@ -62,9 +71,17 @@ const ensureBillingOwner = async (req) => {
 };
 
 const handleTemplateUnlock = async ({ user, templateId, amount, currency, reference, unlockAllTemplates }) => {
+  const resolvedTemplateId = unlockAllTemplates
+    ? TEMPLATE_BUNDLE_ID
+    : String(templateId || '').trim();
+
+  if (!resolvedTemplateId) {
+    throw new Error('Template id is required for template unlock');
+  }
+
   const existingUnlock = await UserTemplateUnlock.findOne({
     business: user.business,
-    templateId: unlockAllTemplates ? TEMPLATE_BUNDLE_ID : templateId
+    templateId: resolvedTemplateId
   });
 
   if (existingUnlock) {
@@ -74,7 +91,7 @@ const handleTemplateUnlock = async ({ user, templateId, amount, currency, refere
   const unlock = await UserTemplateUnlock.create({
     business: user.business,
     user: user._id,
-    templateId: unlockAllTemplates ? TEMPLATE_BUNDLE_ID : templateId,
+    templateId: resolvedTemplateId,
     unlockAllTemplates: Boolean(unlockAllTemplates),
     amount,
     currency,
@@ -85,7 +102,7 @@ const handleTemplateUnlock = async ({ user, templateId, amount, currency, refere
   await TemplatePurchase.create({
     business: user.business,
     user: user._id,
-    templateId: unlockAllTemplates ? TEMPLATE_BUNDLE_ID : templateId,
+    templateId: resolvedTemplateId,
     amount,
     currency,
     paymentMethod: 'paystack',
@@ -96,9 +113,9 @@ const handleTemplateUnlock = async ({ user, templateId, amount, currency, refere
 
   if (unlockAllTemplates) {
     user.hasLifetimeTemplates = true;
-  } else if (templateId) {
+  } else {
     const existing = new Set(user.purchasedTemplates || []);
-    existing.add(templateId);
+    existing.add(resolvedTemplateId);
     user.purchasedTemplates = Array.from(existing);
   }
   await user.save();
@@ -108,7 +125,7 @@ const handleTemplateUnlock = async ({ user, templateId, amount, currency, refere
 
 const applyPaystackMetadata = async (payload, req) => {
   const metadata = payload?.metadata || {};
-  const type = metadata.type;
+  const type = String(metadata.type || '').trim().toLowerCase();
   const userId = metadata.userId || metadata.user;
   const businessId = metadata.businessId || metadata.business;
 
@@ -152,8 +169,15 @@ const applyPaystackMetadata = async (payload, req) => {
   }
 
   if (type === 'template' || type === 'bundle' || type === 'lifetime') {
-    const templateId = metadata.templateId;
-    const unlockAllTemplates = type === 'lifetime' || metadata.unlockAllTemplates;
+    const unlockAllTemplates = type === 'lifetime' || parseBooleanFlag(metadata.unlockAllTemplates);
+    const templateId = unlockAllTemplates
+      ? TEMPLATE_BUNDLE_ID
+      : String(metadata.templateId || '').trim();
+
+    if (!templateId) {
+      throw new Error('Template id is missing from payment metadata');
+    }
+
     const amount = Number(payload?.amount) / 100;
     const currency = payload?.currency || resolveCurrency('NGN');
     const reference = payload?.reference || metadata.reference || `paystack_${Date.now()}`;
@@ -328,7 +352,7 @@ exports.initializeTemplatePayment = asyncHandler(async (req, res, next) => {
       templateId: resolvedTemplateId,
       userId: billingOwner._id.toString(),
       businessId: billingOwner.business.toString(),
-      unlockAllTemplates: paymentType === 'lifetime',
+      ...(paymentType === 'lifetime' ? { unlockAllTemplates: true } : {}),
       bundleTier: paymentType === 'bundle' ? bundleTier : undefined
     }
   });
