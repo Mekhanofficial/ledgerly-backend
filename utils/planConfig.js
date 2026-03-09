@@ -14,6 +14,7 @@ const PLAN_DEFINITIONS = {
     allowCustomerDatabase: true,
     allowWhiteLabel: false,
     allowAdvancedReporting: false,
+    allowLiveChat: false,
     maxUsers: 1,
     templateCategories: ['STANDARD']
   },
@@ -30,6 +31,7 @@ const PLAN_DEFINITIONS = {
     allowCustomerDatabase: true,
     allowWhiteLabel: false,
     allowAdvancedReporting: true,
+    allowLiveChat: false,
     maxUsers: 5,
     templateCategories: ['STANDARD', 'PREMIUM']
   },
@@ -46,6 +48,7 @@ const PLAN_DEFINITIONS = {
     allowCustomerDatabase: true,
     allowWhiteLabel: true,
     allowAdvancedReporting: true,
+    allowLiveChat: true,
     maxUsers: 20,
     templateCategories: ['STANDARD', 'PREMIUM', 'ELITE']
   }

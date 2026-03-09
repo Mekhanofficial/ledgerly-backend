@@ -69,7 +69,9 @@ const checkFeatureAccess = (featureName) => async (req, res, next) => {
     api: planDef.allowApi,
     whiteLabel: planDef.allowWhiteLabel || Boolean(addOns?.whiteLabelEnabled),
     advancedReporting: planDef.allowAdvancedReporting,
-    recurring: planDef.allowRecurring
+    recurring: planDef.allowRecurring,
+    liveChat: planDef.allowLiveChat,
+    livechat: planDef.allowLiveChat
   };
 
   if (featureName in featureFlags) {

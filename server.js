@@ -125,6 +125,7 @@ const billing = require('./routes/billing');
 const documents = require('./routes/documents');
 const webhooks = require('./routes/webhooks');
 const partner = require('./routes/partner');
+const livechat = require('./routes/livechat');
 
 // Mount routers
 app.use('/api/v1/auth', auth);
@@ -147,6 +148,7 @@ app.use('/api/v1/billing', billing);
 app.use('/api/v1/documents', documents);
 app.use('/api/v1/webhooks', webhooks);
 app.use('/api/v1/partner', partner);
+app.use('/api/v1/livechat', livechat);
 
 // Health check
 app.get('/health', (req, res) => {
