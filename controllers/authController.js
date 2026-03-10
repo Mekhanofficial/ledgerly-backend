@@ -182,10 +182,6 @@ exports.register = asyncHandler(async (req, res, next) => {
   // Check if user exists
   const userExists = await User.findOne({ email: normalizedEmail });
   if (userExists) {
-    if (userExists.emailVerified) {
-      return next(new ErrorResponse('User already exists', 400));
-    }
-
     let upgradedPlanContext = null;
     if (paymentReference) {
       const normalizedReference = String(paymentReference).trim();
@@ -201,6 +197,18 @@ exports.register = asyncHandler(async (req, res, next) => {
           plan: normalizePlanId(existingClaim.plan),
           billingCycle: existingClaim.billingCycle === 'yearly' ? 'yearly' : 'monthly'
         };
+        const existingBusiness = await Business.findById(userExists.business);
+        if (!existingBusiness) {
+          return next(new ErrorResponse('Business record not found for this account', 404));
+        }
+        await updateSubscriptionFromPayment({
+          user: userExists,
+          business: existingBusiness,
+          plan: upgradedPlanContext.plan,
+          billingCycle: upgradedPlanContext.billingCycle,
+          paystackTransactionReference: upgradedPlanContext.reference
+        });
+        await syncBusinessFromUser(userExists);
       } else {
         upgradedPlanContext = await resolveLandingSubscriptionFromPayment({
           reference: normalizedReference,
@@ -221,6 +229,18 @@ exports.register = asyncHandler(async (req, res, next) => {
         });
         await syncBusinessFromUser(userExists);
       }
+    }
+
+    if (userExists.emailVerified) {
+      if (upgradedPlanContext) {
+        return next(
+          new ErrorResponse(
+            `Account already exists. ${upgradedPlanContext.plan} plan has been activated. Please sign in.`,
+            409
+          )
+        );
+      }
+      return next(new ErrorResponse('User already exists', 400));
     }
 
     let otpSent = true;
