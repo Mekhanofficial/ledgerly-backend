@@ -1,4 +1,5 @@
 const ErrorResponse = require('../utils/errorResponse');
+const { captureException } = require('../utils/monitoring');
 
 const errorHandler = (err, req, res, next) => {
   let error = { ...err };
@@ -6,6 +7,15 @@ const errorHandler = (err, req, res, next) => {
 
   // Log to console for dev
   console.log(err.stack);
+  captureException(err, {
+    request: {
+      method: req?.method,
+      path: req?.originalUrl || req?.url,
+      ip: req?.ip,
+      userId: req?.user?.id || req?.user?._id,
+      businessId: req?.user?.business,
+    },
+  });
 
   // Mongoose bad ObjectId
   if (err.name === 'CastError') {

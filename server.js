@@ -3,23 +3,35 @@ const path = require('path');
 const dotenv = require('dotenv');
 const cors = require('cors');
 const helmet = require('helmet');
+const compression = require('compression');
 const mongoSanitize = require('express-mongo-sanitize');
 const xss = require('xss-clean');
 const hpp = require('hpp');
 const rateLimit = require('express-rate-limit');
 const connectDB = require('./config/db');
+const { apiCacheControl } = require('./middleware/cacheControl');
+const { initMonitoring, captureException, isMonitoringEnabled } = require('./utils/monitoring');
 const { resetMonthlyInvoiceCounts } = require('./utils/subscriptionService');
 const { processDueRecurringInvoices } = require('./utils/recurringInvoiceService');
 const { getEmailConfig, isEmailConfigured } = require('./config/email');
 
 // Load env vars
 dotenv.config();
+const monitoring = initMonitoring();
 
 // Connect to database
 connectDB();
 
 const app = express();
 const REQUEST_BODY_LIMIT = process.env.REQUEST_BODY_LIMIT || '25mb';
+const parseEnvPositiveInt = (value, fallback) => {
+  const parsed = Number.parseInt(String(value ?? ''), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+};
+const API_RATE_LIMIT_WINDOW_MS = parseEnvPositiveInt(process.env.API_RATE_LIMIT_WINDOW_MS, 15 * 60 * 1000);
+const API_RATE_LIMIT_MAX = parseEnvPositiveInt(process.env.API_RATE_LIMIT_MAX, 1000);
+const AUTH_RATE_LIMIT_MAX = parseEnvPositiveInt(process.env.AUTH_RATE_LIMIT_MAX, 120);
+const UPLOAD_CACHE_MAX_AGE_SECONDS = parseEnvPositiveInt(process.env.UPLOAD_CACHE_MAX_AGE_SECONDS, 24 * 60 * 60);
 
 // Body parser (capture raw body for webhook verification)
 app.use(express.json({
@@ -85,14 +97,28 @@ app.use(helmet({
 app.use(mongoSanitize());
 app.use(xss());
 app.use(hpp());
+app.use(compression({ threshold: 1024 }));
 
 // Rate limiting
 const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 1000, // limit each IP to 1000 requests per windowMs
+  windowMs: API_RATE_LIMIT_WINDOW_MS,
+  max: API_RATE_LIMIT_MAX,
+  standardHeaders: true,
+  legacyHeaders: false,
   message: 'Too many requests from this IP, please try again later.'
 });
+
+const authLimiter = rateLimit({
+  windowMs: API_RATE_LIMIT_WINDOW_MS,
+  max: AUTH_RATE_LIMIT_MAX,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: 'Too many authentication requests from this IP, please try again later.'
+});
+
+app.use('/api/v1/auth', authLimiter);
 app.use('/api', limiter);
+app.use('/api/v1', apiCacheControl);
 
 // Static folder (allow cross-origin image loading from the frontend).
 app.use(
@@ -100,6 +126,7 @@ app.use(
   express.static(path.join(__dirname, 'uploads'), {
     setHeaders: (res) => {
       res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+      res.setHeader('Cache-Control', `public, max-age=${UPLOAD_CACHE_MAX_AGE_SECONDS}, immutable`);
     }
   })
 );
@@ -189,6 +216,7 @@ const maskEmail = (value) => {
 
 const server = app.listen(PORT, () => {
   console.log(`Server running in ${process.env.NODE_ENV} mode on port ${PORT}`);
+  console.log(`Sentry monitoring: ${monitoring.enabled ? 'enabled' : 'disabled'}`);
   const commit = process.env.RENDER_GIT_COMMIT
     || process.env.GIT_COMMIT
     || process.env.COMMIT_SHA
@@ -294,6 +322,24 @@ scheduleRecurringInvoiceGeneration();
 
 // Handle unhandled promise rejections
 process.on('unhandledRejection', (err, promise) => {
+  captureException(err, {
+    process: {
+      type: 'unhandledRejection',
+      message: err?.message || String(err),
+    },
+  });
   console.log(`Error: ${err.message}`);
   server.close(() => process.exit(1));
+});
+
+process.on('uncaughtException', (err) => {
+  captureException(err, {
+    process: {
+      type: 'uncaughtException',
+      message: err?.message || String(err),
+      monitoringEnabled: isMonitoringEnabled(),
+    },
+  });
+  console.error(`Uncaught exception: ${err.message}`);
+  process.exit(1);
 });

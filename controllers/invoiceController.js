@@ -445,6 +445,8 @@ exports.getInvoices = asyncHandler(async (req, res, next) => {
     limit = 20,
     sort = '-date'
   } = req.query;
+  const parsedPage = Math.max(Number.parseInt(page, 10) || 1, 1);
+  const parsedLimit = Math.min(Math.max(Number.parseInt(limit, 10) || 20, 1), 100);
 
   // Build query
   let query = { business: req.user.business };
@@ -480,14 +482,14 @@ exports.getInvoices = asyncHandler(async (req, res, next) => {
   }
 
   // Execute query with pagination
-  const skip = (parseInt(page) - 1) * parseInt(limit);
+  const skip = (parsedPage - 1) * parsedLimit;
 
   const invoices = await Invoice.find(query)
     .populate('customer', 'name email phone company')
     .populate('createdBy', 'name email')
     .sort(sort)
     .skip(skip)
-    .limit(parseInt(limit));
+    .limit(parsedLimit);
 
   const total = await Invoice.countDocuments(query);
 
@@ -509,7 +511,7 @@ exports.getInvoices = asyncHandler(async (req, res, next) => {
     success: true,
     count: invoices.length,
     total,
-    pages: Math.ceil(total / limit),
+    pages: Math.ceil(total / parsedLimit),
     summary: summary[0] || {
       totalAmount: 0,
       totalPaid: 0,

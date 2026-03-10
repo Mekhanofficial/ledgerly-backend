@@ -222,6 +222,8 @@ exports.getReceipts = asyncHandler(async (req, res, next) => {
     page = 1,
     limit = 20
   } = req.query;
+  const parsedPage = Math.max(Number.parseInt(page, 10) || 1, 1);
+  const parsedLimit = Math.min(Math.max(Number.parseInt(limit, 10) || 20, 1), 100);
   
   let query = { business: req.user.business, isVoid: false };
   
@@ -246,8 +248,8 @@ exports.getReceipts = asyncHandler(async (req, res, next) => {
     .populate('customer', 'name email phone')
     .populate('cashier', 'name')
     .sort({ date: -1 })
-    .skip((page - 1) * limit)
-    .limit(parseInt(limit));
+    .skip((parsedPage - 1) * parsedLimit)
+    .limit(parsedLimit);
     
   const total = await Receipt.countDocuments(query);
   
@@ -267,7 +269,7 @@ exports.getReceipts = asyncHandler(async (req, res, next) => {
     success: true,
     count: receipts.length,
     total,
-    pages: Math.ceil(total / limit),
+    pages: Math.ceil(total / parsedLimit),
     summary: totals[0] || { totalAmount: 0, totalReceipts: 0 },
     data: receipts
   });

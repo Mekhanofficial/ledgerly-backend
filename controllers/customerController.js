@@ -54,6 +54,8 @@ const normalizeInvoiceStatus = (status) => String(status || '').trim().toLowerCa
 // @access  Private
 exports.getCustomers = asyncHandler(async (req, res, next) => {
   const { search, type, isActive, page = 1, limit = 20 } = req.query;
+  const parsedPage = Math.max(Number.parseInt(page, 10) || 1, 1);
+  const parsedLimit = Math.min(Math.max(Number.parseInt(limit, 10) || 20, 1), 100);
   
   const effectiveRole = getEffectiveRole(req);
   let query = { business: req.user.business };
@@ -88,8 +90,8 @@ exports.getCustomers = asyncHandler(async (req, res, next) => {
   
   const customers = await Customer.find(query)
     .sort({ name: 1 })
-    .skip((page - 1) * limit)
-    .limit(parseInt(limit));
+    .skip((parsedPage - 1) * parsedLimit)
+    .limit(parsedLimit);
     
   const total = await Customer.countDocuments(query);
   
@@ -97,7 +99,7 @@ exports.getCustomers = asyncHandler(async (req, res, next) => {
     success: true,
     count: customers.length,
     total,
-    pages: Math.ceil(total / limit),
+    pages: Math.ceil(total / parsedLimit),
     data: customers
   });
 });

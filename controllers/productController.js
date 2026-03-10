@@ -110,13 +110,10 @@ const removeFileFromDisk = (filePath) => {
   const absolutePath = resolveUploadAbsolutePath(filePath);
   if (!absolutePath) return;
 
-  try {
-    if (fs.existsSync(absolutePath)) {
-      fs.unlinkSync(absolutePath);
-    }
-  } catch (error) {
+  fs.promises.unlink(absolutePath).catch((error) => {
+    if (error?.code === 'ENOENT') return;
     console.error('Failed to remove product image from disk:', error?.message || error);
-  }
+  });
 };
 
 const getUploadedImage = (req) => {
