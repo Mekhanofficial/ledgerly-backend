@@ -602,12 +602,13 @@ exports.emailReceipt = asyncHandler(async (req, res, next) => {
   );
   const defaultAttachmentFileName = sanitizeAttachmentFileName(`receipt-${receipt.receiptNumber}.pdf`);
   const frontendPdfAttachment = resolveFrontendPdfAttachment(req.body, defaultAttachmentFileName);
-  const attachmentFileName = frontendPdfAttachment?.fileName || defaultAttachmentFileName;
-
-  const receiptForPdf = receipt.toObject ? receipt.toObject() : receipt;
-  if (requestedTemplateStyle) {
-    receiptForPdf.templateStyle = requestedTemplateStyle;
+  if (!frontendPdfAttachment?.buffer) {
+    return next(new ErrorResponse(
+      'Frontend receipt PDF attachment is required. Please regenerate the receipt PDF and try again.',
+      400
+    ));
   }
+  const attachmentFileName = frontendPdfAttachment.fileName || defaultAttachmentFileName;
 
   const templateMeta = resolveTemplateMeta(requestedTemplateStyle);
   const mailContext = {
@@ -621,7 +622,7 @@ exports.emailReceipt = asyncHandler(async (req, res, next) => {
     currency: receipt.currency || receipt.invoice?.currency || receipt.business?.currency || 'USD'
   };
 
-  const pdfBuffer = frontendPdfAttachment?.buffer || await generatePDF.receipt(receiptForPdf);
+  const pdfBuffer = frontendPdfAttachment.buffer;
   
   try {
     await sendEmail({

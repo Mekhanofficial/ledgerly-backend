@@ -199,7 +199,6 @@ const resolveFrontendPdfAttachment = (payload = {}, defaultFileName = 'invoice.p
     );
   }
 
-  // Ignore invalid payloads and safely fall back to server-side generation.
   if (buffer.slice(0, 4).toString('utf8') !== '%PDF') {
     return null;
   }
@@ -1095,14 +1094,16 @@ exports.sendInvoice = asyncHandler(async (req, res, next) => {
   const resolvedSubject = interpolateTemplateText(subjectTemplate, mailContext);
   const resolvedMessage = interpolateTemplateText(messageTemplate, mailContext);
 
-  // Prefer frontend-rendered PDF when provided to guarantee email attachment
-  // matches the exact client-side template rendering.
   const defaultAttachmentFileName = sanitizeAttachmentFileName(`invoice-${invoice.invoiceNumber}.pdf`);
   const frontendPdfAttachment = resolveFrontendPdfAttachment(req.body, defaultAttachmentFileName);
-  const attachmentFileName = frontendPdfAttachment?.fileName || defaultAttachmentFileName;
-  const pdfBuffer = frontendPdfAttachment?.buffer || await generatePDF.invoice(invoice, {
-    templateStyle: resolvedTemplateStyle
-  });
+  if (!frontendPdfAttachment?.buffer) {
+    return next(new ErrorResponse(
+      'Frontend invoice PDF attachment is required. Please regenerate the invoice PDF and try again.',
+      400
+    ));
+  }
+  const attachmentFileName = frontendPdfAttachment.fileName || defaultAttachmentFileName;
+  const pdfBuffer = frontendPdfAttachment.buffer;
 
   // Send email
   try {
@@ -1315,17 +1316,6 @@ exports.recordPayment = asyncHandler(async (req, res, next) => {
     const receiptCustomer = invoice.customer && typeof invoice.customer === 'object'
       ? invoice.customer
       : { name: 'Customer' };
-    const receiptForPdf = {
-      ...receipt.toObject(),
-      business,
-      customer: receiptCustomer,
-      templateStyle: resolvedReceiptTemplateStyle,
-      invoice: {
-        _id: invoice._id,
-        invoiceNumber: invoice.invoiceNumber,
-        currency: invoice.currency
-      }
-    };
     const receiptTemplateMeta = resolveInvoiceTemplateMeta(resolvedReceiptTemplateStyle);
     const receiptMailContext = {
       customerName: invoice.customer?.name || 'Customer',
@@ -1343,9 +1333,8 @@ exports.recordPayment = asyncHandler(async (req, res, next) => {
       defaultReceiptAttachmentFileName
     );
     const receiptAttachmentFileName = frontendReceiptAttachment?.fileName || defaultReceiptAttachmentFileName;
-    const receiptPDF = frontendReceiptAttachment?.buffer || await generatePDF.receipt(receiptForPdf);
     
-    if (invoice.customer?.email) {
+    if (invoice.customer?.email && frontendReceiptAttachment?.buffer) {
       try {
         await sendEmail({
           businessId: req.user.business,
@@ -1358,13 +1347,17 @@ exports.recordPayment = asyncHandler(async (req, res, next) => {
           }),
           attachments: [{
             filename: receiptAttachmentFileName,
-            content: receiptPDF,
+            content: frontendReceiptAttachment.buffer,
             contentType: 'application/pdf'
           }]
         });
       } catch (error) {
         console.error('Unable to send receipt email:', toSafeEmailErrorMessage(error));
       }
+    } else if (invoice.customer?.email) {
+      console.warn('Skipping receipt email because frontend receipt PDF attachment is missing', {
+        invoiceId: invoice._id?.toString?.() || invoice._id
+      });
     } else {
       console.warn('Skipping receipt email because customer email is missing', {
         invoiceId: invoice._id?.toString?.() || invoice._id

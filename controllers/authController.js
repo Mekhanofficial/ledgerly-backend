@@ -96,13 +96,17 @@ const hashOtp = (value) =>
     .update(String(value || '').trim())
     .digest('hex');
 
-const issueAndSendEmailVerificationOtp = async (user) => {
+const persistEmailVerificationOtp = async (user) => {
   const otp = user.generateEmailVerificationOtp();
   await runWithTimeout(
     user.save({ validateBeforeSave: false }),
     OTP_SAVE_TIMEOUT_MS,
     `OTP persistence timed out after ${OTP_SAVE_TIMEOUT_MS}ms`
   );
+  return otp;
+};
+
+const sendEmailVerificationOtp = async ({ user, otp }) => {
   const sendTask = sendVerificationOtpEmail({
     to: user.email,
     name: user.name,
@@ -113,6 +117,25 @@ const issueAndSendEmailVerificationOtp = async (user) => {
     OTP_SEND_TIMEOUT_MS,
     `OTP email send timed out after ${OTP_SEND_TIMEOUT_MS}ms`
   );
+};
+
+const issueAndSendEmailVerificationOtp = async (user) => {
+  const otp = await persistEmailVerificationOtp(user);
+  await sendEmailVerificationOtp({ user, otp });
+};
+
+const queueEmailVerificationOtp = async (user, contextLabel = 'verification') => {
+  const otp = await persistEmailVerificationOtp(user);
+  setImmediate(async () => {
+    try {
+      await sendEmailVerificationOtp({ user, otp });
+    } catch (otpError) {
+      console.error(
+        `Failed to deliver ${contextLabel} OTP email:`,
+        otpError?.message || otpError
+      );
+    }
+  });
 };
 
 const resolveLandingSubscriptionFromPayment = async ({ reference, expectedEmail }) => {
@@ -246,17 +269,17 @@ exports.register = asyncHandler(async (req, res, next) => {
     let otpSent = true;
     let otpErrorMessage = '';
     try {
-      await issueAndSendEmailVerificationOtp(userExists);
+      await queueEmailVerificationOtp(userExists, 'registration');
     } catch (otpError) {
       otpSent = false;
-      otpErrorMessage = otpError?.message || 'Unable to send verification code';
-      console.error('Failed to resend registration OTP for existing unverified user:', otpErrorMessage);
+      otpErrorMessage = otpError?.message || 'Unable to queue verification code';
+      console.error('Failed to queue registration OTP for existing unverified user:', otpErrorMessage);
     }
 
     return res.status(200).json({
       success: true,
       message: otpSent
-        ? 'Account already exists but is not verified. A new verification code has been sent to your email.'
+        ? 'Account already exists but is not verified. A new verification code is being sent to your email. Use resend OTP if it does not arrive shortly.'
         : 'Account already exists but is not verified. We could not send verification code right now. Please try resend OTP.',
       data: {
         email: userExists.email,
@@ -351,11 +374,11 @@ exports.register = asyncHandler(async (req, res, next) => {
   let otpErrorMessage = '';
 
   try {
-    await issueAndSendEmailVerificationOtp(user);
+    await queueEmailVerificationOtp(user, 'registration');
   } catch (otpError) {
     otpSent = false;
-    otpErrorMessage = otpError?.message || 'Unable to send verification code';
-    console.error('Failed to send registration OTP:', otpErrorMessage);
+    otpErrorMessage = otpError?.message || 'Unable to queue verification code';
+    console.error('Failed to queue registration OTP:', otpErrorMessage);
   }
 
   const accountCreatedMessage = paidSubscriptionContext
@@ -365,7 +388,7 @@ exports.register = asyncHandler(async (req, res, next) => {
   res.status(201).json({
     success: true,
     message: otpSent
-      ? `${accountCreatedMessage} A verification code has been sent to your email.`
+      ? `${accountCreatedMessage} A verification code is being sent to your email. Use resend OTP if it does not arrive shortly.`
       : `${accountCreatedMessage} We could not send verification code right now. Please use resend OTP.`,
     data: {
       email: user.email,

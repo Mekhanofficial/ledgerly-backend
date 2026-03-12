@@ -130,24 +130,33 @@ CustomerSchema.pre('save', async function(next) {
 // Update stats when invoice is created/updated/deleted
 CustomerSchema.statics.updateCustomerStats = async function(customerId) {
   const Invoice = mongoose.model('Invoice');
-  
-  const invoices = await Invoice.find({ customer: customerId });
-  
-  let totalInvoiced = 0;
-  let totalPaid = 0;
-  let outstandingBalance = 0;
-  
-  invoices.forEach(invoice => {
-    totalInvoiced += invoice.total;
-    totalPaid += invoice.amountPaid;
-    outstandingBalance += invoice.balance;
-  });
-  
+
+  if (!customerId || !mongoose.isValidObjectId(customerId)) {
+    return null;
+  }
+
+  const resolvedCustomerId = new mongoose.Types.ObjectId(String(customerId));
+  const [summary] = await Invoice.aggregate([
+    {
+      $match: {
+        customer: resolvedCustomerId
+      }
+    },
+    {
+      $group: {
+        _id: '$customer',
+        totalInvoiced: { $sum: '$total' },
+        totalPaid: { $sum: '$amountPaid' },
+        outstandingBalance: { $sum: '$balance' }
+      }
+    }
+  ]);
+
   await this.findByIdAndUpdate(customerId, {
-    totalInvoiced,
-    totalPaid,
-    outstandingBalance,
-    totalSpent: totalPaid
+    totalInvoiced: summary?.totalInvoiced || 0,
+    totalPaid: summary?.totalPaid || 0,
+    outstandingBalance: summary?.outstandingBalance || 0,
+    totalSpent: summary?.totalPaid || 0
   });
 };
 

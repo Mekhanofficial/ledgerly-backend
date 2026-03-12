@@ -399,9 +399,11 @@ const sendPublicPaidInvoiceReceiptEmail = async ({
     { pdfAttachment },
     attachmentFileName
   );
-
   if (!frontendPdfAttachment?.buffer) {
-    throw new ErrorResponse('A valid frontend PDF attachment is required to send this receipt', 400);
+    throw new ErrorResponse(
+      'Frontend receipt PDF attachment is required. Please regenerate the receipt PDF and try again.',
+      400
+    );
   }
 
   const customerName =

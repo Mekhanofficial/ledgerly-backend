@@ -130,7 +130,7 @@ const syncBusinessFromUser = async (user) => {
     billingCycle = latestSubscription?.billingCycle;
   }
   billingCycle = billingCycle === 'yearly' ? 'yearly' : 'monthly';
-  business.subscription = {
+  const nextSubscription = {
     ...(business.subscription || {}),
     plan,
     status,
@@ -138,6 +138,32 @@ const syncBusinessFromUser = async (user) => {
     currentPeriodEnd: user.subscriptionEndsAt,
     trialEndsAt: user.trialEndsAt
   };
+
+  const currentPeriodEnd = business.subscription?.currentPeriodEnd
+    ? new Date(business.subscription.currentPeriodEnd).getTime()
+    : null;
+  const nextPeriodEnd = nextSubscription.currentPeriodEnd
+    ? new Date(nextSubscription.currentPeriodEnd).getTime()
+    : null;
+  const currentTrialEndsAt = business.subscription?.trialEndsAt
+    ? new Date(business.subscription.trialEndsAt).getTime()
+    : null;
+  const nextTrialEndsAt = nextSubscription.trialEndsAt
+    ? new Date(nextSubscription.trialEndsAt).getTime()
+    : null;
+
+  const subscriptionChanged =
+    business.subscription?.plan !== nextSubscription.plan
+    || business.subscription?.status !== nextSubscription.status
+    || business.subscription?.billingCycle !== nextSubscription.billingCycle
+    || currentPeriodEnd !== nextPeriodEnd
+    || currentTrialEndsAt !== nextTrialEndsAt;
+
+  if (!subscriptionChanged) {
+    return business;
+  }
+
+  business.subscription = nextSubscription;
   await business.save();
   return business;
 };
