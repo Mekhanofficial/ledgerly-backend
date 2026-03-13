@@ -19,6 +19,8 @@ const DocumentSchema = new mongoose.Schema(
     originalName: String,
     fileName: String,
     filePath: String,
+    filePublicId: String,
+    fileResourceType: String,
     mimeType: String,
     size: Number,
     type: {

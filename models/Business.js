@@ -35,6 +35,10 @@ const BusinessSchema = new mongoose.Schema({
     type: String,
     default: 'default-logo.png'
   },
+  logoPublicId: {
+    type: String,
+    default: ''
+  },
   website: String,
   taxId: String,
   registrationNumber: String,

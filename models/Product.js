@@ -52,6 +52,10 @@ const ProductSchema = new mongoose.Schema({
   },
   images: [{
     url: String,
+    publicId: {
+      type: String,
+      default: ''
+    },
     altText: String,
     isPrimary: {
       type: Boolean,

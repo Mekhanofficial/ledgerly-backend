@@ -5,12 +5,17 @@ const ErrorResponse = require('../utils/errorResponse');
 const asyncHandler = require('../utils/asyncHandler');
 const sendEmail = require('../utils/email');
 const crypto = require('crypto');
-const path = require('path');
-const fs = require('fs');
 const { OTP_EXPIRY_MINUTES, sendVerificationOtpEmail } = require('../emailmicroservice');
 const { getDefaultPermissions } = require('../utils/rolePermissions');
 const { verifyTransaction } = require('../utils/paystack');
 const { normalizePlanId } = require('../utils/planConfig');
+const {
+  DEFAULT_PROFILE_IMAGE,
+  buildAssetUrl,
+  normalizeStoredAsset,
+  removeStoredAsset,
+  uploadCloudinaryImage
+} = require('../utils/assetStorage');
 const {
   startTrialForUser,
   updateSubscriptionFromPayment,
@@ -46,47 +51,9 @@ const runWithTimeout = async (task, timeoutMs, timeoutMessage) => {
   }
 };
 
-const DEFAULT_PROFILE_IMAGE = 'uploads/profile/default-avatar.png';
-
-const normalizeProfileImagePath = (filePath) => {
-  const raw = String(filePath || '').trim();
-  if (!raw) return '';
-  const normalized = raw
-    .replace(/\\/g, '/')
-    .replace(/^\.?\//, '')
-    .replace(/^\/+/, '');
-
-  const uploadsMatch = normalized.match(/(?:^|\/)(uploads\/.+)$/i);
-  if (uploadsMatch?.[1]) {
-    return uploadsMatch[1];
-  }
-
-  return normalized;
-};
-
-const buildAvatarUrl = (req, profileImagePath) => {
-  const normalized = normalizeProfileImagePath(profileImagePath);
-  if (!normalized) return '';
-  return `${req.protocol}://${req.get('host')}/${normalized}`;
-};
-
-const removeProfileImageFromDisk = (profileImagePath) => {
-  const normalized = normalizeProfileImagePath(profileImagePath);
-  if (!normalized || normalized === DEFAULT_PROFILE_IMAGE) return;
-
-  const absolutePath = path.join(__dirname, '..', normalized);
-  if (fs.existsSync(absolutePath)) {
-    try {
-      fs.unlinkSync(absolutePath);
-    } catch (error) {
-      console.error('Failed to remove old profile image:', error?.message || error);
-    }
-  }
-};
-
 const toClientUser = (userDoc, req) => {
   const user = userDoc?.toObject ? userDoc.toObject() : { ...(userDoc || {}) };
-  user.avatarUrl = buildAvatarUrl(req, user.profileImage);
+  user.avatarUrl = buildAssetUrl(req, user.profileImage);
   return user;
 };
 
@@ -605,9 +572,18 @@ exports.updateDetails = asyncHandler(async (req, res, next) => {
   }
 
   let previousProfileImage = '';
-  if (req.file?.path) {
+  let previousProfileImagePublicId = '';
+  let uploadedProfileImage = null;
+
+  if (req.file?.buffer) {
     previousProfileImage = user.profileImage || '';
-    user.profileImage = normalizeProfileImagePath(req.file.path);
+    previousProfileImagePublicId = user.profileImagePublicId || '';
+    uploadedProfileImage = await uploadCloudinaryImage(req.file, {
+      assetType: 'profile',
+      fileName: user.name || user.email || 'profile-image'
+    });
+    user.profileImage = normalizeStoredAsset(uploadedProfileImage?.url);
+    user.profileImagePublicId = uploadedProfileImage?.publicId || '';
     updatedFields.add('profileImage');
   }
 
@@ -615,10 +591,24 @@ exports.updateDetails = asyncHandler(async (req, res, next) => {
     return next(new ErrorResponse('No updates provided', 400));
   }
 
-  await user.save();
+  try {
+    await user.save();
+  } catch (error) {
+    if (uploadedProfileImage?.url) {
+      await removeStoredAsset({
+        url: uploadedProfileImage.url,
+        publicId: uploadedProfileImage.publicId
+      });
+    }
+    throw error;
+  }
 
   if (previousProfileImage && previousProfileImage !== user.profileImage) {
-    removeProfileImageFromDisk(previousProfileImage);
+    await removeStoredAsset({
+      url: previousProfileImage,
+      publicId: previousProfileImagePublicId,
+      preserve: [DEFAULT_PROFILE_IMAGE]
+    });
   }
 
   res.status(200).json({
@@ -755,7 +745,7 @@ const sendTokenResponse = (user, statusCode, res) => {
     options.secure = true;
   }
 
-  const profileImage = normalizeProfileImagePath(user.profileImage) || DEFAULT_PROFILE_IMAGE;
+  const profileImage = normalizeStoredAsset(user.profileImage) || DEFAULT_PROFILE_IMAGE;
 
   res
     .status(statusCode)
@@ -772,7 +762,7 @@ const sendTokenResponse = (user, statusCode, res) => {
       role: user.role,
       business: user.business,
       profileImage,
-      avatarUrl: `${res.req.protocol}://${res.req.get('host')}/${profileImage}`,
+      avatarUrl: buildAssetUrl(res.req, profileImage),
       permissions: user.permissions
     }
     });

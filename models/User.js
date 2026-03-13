@@ -47,6 +47,10 @@ const UserSchema = new mongoose.Schema({
     type: String,
     default: 'uploads/profile/default-avatar.png'
   },
+  profileImagePublicId: {
+    type: String,
+    default: ''
+  },
   isActive: {
     type: Boolean,
     default: true

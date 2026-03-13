@@ -1,12 +1,14 @@
-const fs = require('fs');
-const path = require('path');
 const Product = require('../models/Product');
 const Category = require('../models/Category');
 const Supplier = require('../models/Supplier');
 const InventoryTransaction = require('../models/InventoryTransaction');
 const ErrorResponse = require('../utils/errorResponse');
 const asyncHandler = require('../utils/asyncHandler');
-const compressImage = require('../utils/compressImage');
+const {
+  normalizeStoredAsset,
+  removeStoredAsset,
+  uploadCloudinaryImage
+} = require('../utils/assetStorage');
 
 const toStockNumber = (value, fallback = 0) => {
   const parsed = Number(value);
@@ -79,41 +81,6 @@ const normalizeProductPayload = (payload) => {
   });
 
   return normalizedPayload;
-};
-
-const normalizeStoredUploadPath = (filePath) => {
-  const raw = String(filePath || '').trim();
-  if (!raw) return '';
-
-  const normalized = raw
-    .replace(/\\/g, '/')
-    .replace(/^\.?\//, '')
-    .replace(/^\/+/, '');
-
-  const uploadsMatch = normalized.match(/(?:^|\/)(uploads\/.+)$/i);
-  if (uploadsMatch?.[1]) {
-    return uploadsMatch[1];
-  }
-
-  return normalized;
-};
-
-const isLocalUploadPath = (filePath) => /^uploads\//i.test(normalizeStoredUploadPath(filePath));
-
-const resolveUploadAbsolutePath = (filePath) => {
-  const normalized = normalizeStoredUploadPath(filePath);
-  if (!normalized) return '';
-  return path.join(__dirname, '..', normalized);
-};
-
-const removeFileFromDisk = (filePath) => {
-  const absolutePath = resolveUploadAbsolutePath(filePath);
-  if (!absolutePath) return;
-
-  fs.promises.unlink(absolutePath).catch((error) => {
-    if (error?.code === 'ENOENT') return;
-    console.error('Failed to remove product image from disk:', error?.message || error);
-  });
 };
 
 const getUploadedImage = (req) => {
@@ -316,24 +283,23 @@ exports.createProduct = asyncHandler(async (req, res, next) => {
   req.body.createdBy = req.user.id;
 
   const uploadedImage = getUploadedImage(req);
-  let uploadedImagePath = '';
+  let uploadedImageAsset = null;
 
-  if (uploadedImage?.path) {
-    try {
-      const compressedPath = await compressImage(uploadedImage.path);
-      uploadedImagePath = normalizeStoredUploadPath(compressedPath);
-      req.body.images = [{
-        url: uploadedImagePath,
-        altText: req.body.name || '',
-        isPrimary: true
-      }];
-    } catch (error) {
-      removeFileFromDisk(uploadedImage.path);
-      throw error;
-    }
+  if (uploadedImage?.buffer) {
+    uploadedImageAsset = await uploadCloudinaryImage(uploadedImage, {
+      assetType: 'product',
+      fileName: req.body.name || uploadedImage.originalname || 'product-image'
+    });
+
+    req.body.images = [{
+      url: normalizeStoredAsset(uploadedImageAsset?.url),
+      publicId: uploadedImageAsset?.publicId || '',
+      altText: req.body.name || '',
+      isPrimary: true
+    }];
   }
 
-  let shouldCleanupUploadedImage = Boolean(uploadedImagePath);
+  let shouldCleanupUploadedImage = Boolean(uploadedImageAsset?.url);
   try {
     // Generate SKU if not provided
     if (!req.body.sku) {
@@ -391,8 +357,11 @@ exports.createProduct = asyncHandler(async (req, res, next) => {
       data: product
     });
   } catch (error) {
-    if (shouldCleanupUploadedImage && uploadedImagePath) {
-      removeFileFromDisk(uploadedImagePath);
+    if (shouldCleanupUploadedImage && uploadedImageAsset?.url) {
+      await removeStoredAsset({
+        url: uploadedImageAsset.url,
+        publicId: uploadedImageAsset.publicId
+      });
     }
     throw error;
   }
@@ -415,28 +384,30 @@ exports.updateProduct = asyncHandler(async (req, res, next) => {
 
   const previousCategory = product.category ? product.category.toString() : null;
   const previousSupplier = product.supplier ? product.supplier.toString() : null;
-  const previousLocalImagePaths = Array.isArray(product.images)
+  const previousImageAssets = Array.isArray(product.images)
     ? product.images
-      .map((image) => image?.url)
-      .filter((imagePath) => isLocalUploadPath(imagePath))
+      .map((image) => ({
+        url: image?.url,
+        publicId: image?.publicId || ''
+      }))
+      .filter((image) => image.url)
     : [];
 
   const uploadedImage = getUploadedImage(req);
-  let uploadedImagePath = '';
+  let uploadedImageAsset = null;
 
-  if (uploadedImage?.path) {
-    try {
-      const compressedPath = await compressImage(uploadedImage.path);
-      uploadedImagePath = normalizeStoredUploadPath(compressedPath);
-      req.body.images = [{
-        url: uploadedImagePath,
-        altText: req.body.name || product.name || '',
-        isPrimary: true
-      }];
-    } catch (error) {
-      removeFileFromDisk(uploadedImage.path);
-      throw error;
-    }
+  if (uploadedImage?.buffer) {
+    uploadedImageAsset = await uploadCloudinaryImage(uploadedImage, {
+      assetType: 'product',
+      fileName: req.body.name || product.name || uploadedImage.originalname || 'product-image'
+    });
+
+    req.body.images = [{
+      url: normalizeStoredAsset(uploadedImageAsset?.url),
+      publicId: uploadedImageAsset?.publicId || '',
+      altText: req.body.name || product.name || '',
+      isPrimary: true
+    }];
   }
 
   req.body.updatedBy = req.user.id;
@@ -446,7 +417,7 @@ exports.updateProduct = asyncHandler(async (req, res, next) => {
     req.body.stock = normalizeStockPayload(req.body.stock, currentStock);
   }
 
-  let shouldCleanupUploadedImage = Boolean(uploadedImagePath);
+  let shouldCleanupUploadedImage = Boolean(uploadedImageAsset?.url);
   try {
     product = await Product.findByIdAndUpdate(req.params.id, req.body, {
       new: true,
@@ -485,10 +456,12 @@ exports.updateProduct = asyncHandler(async (req, res, next) => {
       });
     }
 
-    if (uploadedImagePath) {
-      previousLocalImagePaths
-        .filter((imagePath) => imagePath && imagePath !== uploadedImagePath)
-        .forEach((imagePath) => removeFileFromDisk(imagePath));
+    if (uploadedImageAsset?.url) {
+      await Promise.all(
+        previousImageAssets
+          .filter((image) => image.url && image.url !== uploadedImageAsset.url)
+          .map((image) => removeStoredAsset(image))
+      );
     }
 
     res.status(200).json({
@@ -496,8 +469,11 @@ exports.updateProduct = asyncHandler(async (req, res, next) => {
       data: product
     });
   } catch (error) {
-    if (shouldCleanupUploadedImage && uploadedImagePath) {
-      removeFileFromDisk(uploadedImagePath);
+    if (shouldCleanupUploadedImage && uploadedImageAsset?.url) {
+      await removeStoredAsset({
+        url: uploadedImageAsset.url,
+        publicId: uploadedImageAsset.publicId
+      });
     }
     throw error;
   }

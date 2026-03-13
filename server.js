@@ -205,6 +205,11 @@ app.use('*', (req, res) => {
 });
 
 const PORT = process.env.PORT || 7000;
+const normalizePort = (value) => {
+  const parsed = Number.parseInt(String(value ?? ''), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : value;
+};
+const normalizedPort = normalizePort(PORT);
 const maskEmail = (value) => {
   const email = String(value || '').trim();
   if (!email.includes('@')) return email ? '***' : '';
@@ -250,6 +255,22 @@ const server = app.listen(PORT, () => {
       'EMAIL_DELIVERY_PROVIDER=brevo expects a Brevo API key (xkeysib-...). Current BREVO_API_KEY looks like SMTP key (xsmtpsib-...).'
     );
   }
+});
+
+server.on('error', (error) => {
+  if (error.code === 'EADDRINUSE') {
+    console.error(
+      `Port ${normalizedPort} is already in use. Stop the existing process or set a different PORT before starting Ledgerly.`
+    );
+    process.exit(1);
+  }
+
+  if (error.code === 'EACCES') {
+    console.error(`Port ${normalizedPort} requires elevated privileges.`);
+    process.exit(1);
+  }
+
+  throw error;
 });
 
 // Monthly invoice count reset (runs daily)
@@ -333,6 +354,13 @@ process.on('unhandledRejection', (err, promise) => {
 });
 
 process.on('uncaughtException', (err) => {
+  if (err?.code === 'EADDRINUSE') {
+    console.error(
+      `Port ${normalizedPort} is already in use. Stop the existing process or set a different PORT before starting Ledgerly.`
+    );
+    process.exit(1);
+  }
+
   captureException(err, {
     process: {
       type: 'uncaughtException',

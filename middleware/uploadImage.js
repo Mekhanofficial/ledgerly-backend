@@ -1,34 +1,46 @@
-const fs = require('fs');
 const multer = require('multer');
 const path = require('path');
 const ErrorResponse = require('../utils/errorResponse');
 
-const uploadDirectory = path.join(process.cwd(), 'uploads', 'products');
+const storage = multer.memoryStorage();
 
-if (!fs.existsSync(uploadDirectory)) {
-  fs.mkdirSync(uploadDirectory, { recursive: true });
-}
+const defaultImageExtensions = new Set(['.jpeg', '.jpg', '.png', '.webp']);
+const defaultImageMimeTypes = new Set(['image/jpeg', 'image/png', 'image/webp']);
+const logoExtensions = new Set(['.jpeg', '.jpg', '.png', '.gif', '.webp']);
+const logoMimeTypes = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp']);
 
-const storage = multer.diskStorage({
-  destination: function (req, file, cb) {
-    cb(null, uploadDirectory);
-  },
-  filename: function (req, file, cb) {
-    const extension = path.extname(file.originalname).toLowerCase();
-    const uniqueName = `${Date.now()}-${Math.round(Math.random() * 1e9)}${extension}`;
-    cb(null, uniqueName);
-  }
-});
-
-const allowedExtensions = new Set(['.jpeg', '.jpg', '.png', '.webp']);
-const allowedMimeTypes = new Set(['image/jpeg', 'image/png', 'image/webp']);
-
-const fileFilter = (req, file, cb) => {
+const isAllowedImage = (file, { allowGif = false } = {}) => {
   const extension = path.extname(file.originalname || '').toLowerCase();
   const mimetype = String(file.mimetype || '').toLowerCase();
+  const extensions = allowGif ? logoExtensions : defaultImageExtensions;
+  const mimeTypes = allowGif ? logoMimeTypes : defaultImageMimeTypes;
 
-  if (allowedExtensions.has(extension) && allowedMimeTypes.has(mimetype)) {
+  return extensions.has(extension) && mimeTypes.has(mimetype);
+};
+
+const fileFilter = (req, file, cb) => {
+  if (file.fieldname === 'profileImage' && isAllowedImage(file)) {
     cb(null, true);
+    return;
+  }
+
+  if ((file.fieldname === 'image' || file.fieldname === 'productImage') && isAllowedImage(file)) {
+    cb(null, true);
+    return;
+  }
+
+  if (file.fieldname === 'logo' && isAllowedImage(file, { allowGif: true })) {
+    cb(null, true);
+    return;
+  }
+
+  if (file.fieldname === 'profileImage') {
+    cb(new ErrorResponse('Profile photos must be JPG, PNG, or WEBP images.', 400));
+    return;
+  }
+
+  if (file.fieldname === 'logo') {
+    cb(new ErrorResponse('Logo uploads must be JPG, PNG, GIF, or WEBP images.', 400));
     return;
   }
 
@@ -39,7 +51,7 @@ const uploadImage = multer({
   storage,
   limits: {
     fileSize: 5 * 1024 * 1024,
-    files: 1
+    files: 2
   },
   fileFilter
 });

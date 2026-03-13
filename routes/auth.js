@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const upload = require('../middleware/upload');
+const uploadImage = require('../middleware/uploadImage');
 const {
   register,
   login,
@@ -22,7 +22,7 @@ router.post('/verify-email-otp', verifyEmailOtp);
 router.post('/resend-email-otp', resendEmailOtp);
 router.get('/logout', logout);
 router.get('/me', protect, getMe);
-router.put('/updatedetails', protect, upload.single('profileImage'), updateDetails);
+router.put('/updatedetails', protect, uploadImage.single('profileImage'), updateDetails);
 router.put('/updatepassword', protect, updatePassword);
 router.post('/forgotpassword', forgotPassword);
 router.put('/resetpassword/:resettoken', resetPassword);

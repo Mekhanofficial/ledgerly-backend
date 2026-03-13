@@ -3,6 +3,33 @@ const Subscription = require('../models/Subscription');
 const AuditLog = require('../models/AuditLog');
 const ErrorResponse = require('../utils/errorResponse');
 const asyncHandler = require('../utils/asyncHandler');
+const { getPlanDefinition } = require('../utils/planConfig');
+const { resolveBillingOwner, resolveEffectivePlan } = require('../utils/subscriptionService');
+const {
+  removeStoredAsset,
+  uploadCloudinaryImage
+} = require('../utils/assetStorage');
+
+const resolveObjectField = (value) => {
+  if (!value) return null;
+  if (typeof value === 'object' && !Array.isArray(value)) {
+    return value;
+  }
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(value);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed;
+    }
+  } catch (error) {
+    return null;
+  }
+
+  return null;
+};
 
 const logAuditEntry = async (req, action, resource, details = {}) => {
   await AuditLog.create({
@@ -56,32 +83,95 @@ exports.updateBusinessProfile = asyncHandler(async (req, res, next) => {
 
   const allowedFields = ['name', 'email', 'phone', 'website', 'industry', 'logo', 'currency', 'timezone', 'taxId', 'registrationNumber'];
   const changes = {};
+  const previousLogo = business.logo || '';
+  const previousLogoPublicId = business.logoPublicId || '';
+  const parsedAddress = resolveObjectField(req.body.address);
+  const parsedSettings = resolveObjectField(req.body.settings);
+  const requestedLogoValue = req.body.logo === undefined
+    ? undefined
+    : String(req.body.logo || '').trim();
+  const wantsUploadedLogo = Boolean(req.file?.buffer);
+  const wantsRemoteLogo = requestedLogoValue !== undefined
+    && requestedLogoValue !== ''
+    && requestedLogoValue !== previousLogo;
+
+  if (wantsUploadedLogo || wantsRemoteLogo) {
+    const billingOwner = await resolveBillingOwner(req.user);
+    const effectivePlan = resolveEffectivePlan(billingOwner);
+    const planDefinition = getPlanDefinition(effectivePlan);
+
+    if (!planDefinition.allowCustomLogo) {
+      return next(new ErrorResponse(
+        'Business logos are available on Professional and Enterprise plans.',
+        403
+      ));
+    }
+  }
+
+  let shouldCleanupPreviousLogo = false;
+  let uploadedLogo = null;
 
   allowedFields.forEach(field => {
     if (req.body[field] !== undefined) {
-      changes[field] = req.body[field];
-      business[field] = req.body[field];
+      const nextValue = field === 'logo' ? requestedLogoValue : req.body[field];
+      changes[field] = nextValue;
+      business[field] = nextValue;
+
+      if (field === 'logo') {
+        business.logoPublicId = '';
+        shouldCleanupPreviousLogo = nextValue !== previousLogo;
+      }
     }
   });
 
-  if (req.body.address) {
+  if (req.file?.buffer) {
+    uploadedLogo = await uploadCloudinaryImage(req.file, {
+      assetType: 'logo',
+      fileName: business.name || 'business-logo'
+    });
+
+    business.logo = uploadedLogo?.url || business.logo;
+    business.logoPublicId = uploadedLogo?.publicId || '';
+    changes.logo = business.logo;
+    shouldCleanupPreviousLogo = previousLogo !== business.logo;
+  }
+
+  if (parsedAddress) {
     business.address = {
       ...business.address,
-      ...req.body.address
+      ...parsedAddress
     };
 
-    changes.address = req.body.address;
+    changes.address = parsedAddress;
   }
 
-  if (req.body.settings) {
+  if (parsedSettings) {
     business.settings = {
       ...business.settings,
-      ...req.body.settings
+      ...parsedSettings
     };
-    changes.settings = req.body.settings;
+    changes.settings = parsedSettings;
   }
 
-  await business.save();
+  try {
+    await business.save();
+  } catch (error) {
+    if (uploadedLogo?.url) {
+      await removeStoredAsset({
+        url: uploadedLogo.url,
+        publicId: uploadedLogo.publicId
+      });
+    }
+    throw error;
+  }
+
+  if (shouldCleanupPreviousLogo && previousLogo && previousLogo !== business.logo) {
+    await removeStoredAsset({
+      url: previousLogo,
+      publicId: previousLogoPublicId
+    });
+  }
+
   await logAuditEntry(req, 'update-business-profile', 'Business', changes);
 
   res.status(200).json({

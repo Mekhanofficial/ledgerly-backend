@@ -16,7 +16,11 @@ const PUBLIC_CACHE_MAX_AGE = parsePositiveInt(
 const NO_STORE_PATTERNS = [
   /^\/auth(\/|$)/,
   /^\/webhooks(\/|$)/,
-  /^\/payments\/webhook(\/|$)/
+  /^\/payments\/webhook(\/|$)/,
+  // Dynamic inventory data should always be fresh.
+  /^\/categories(\/|$)/,
+  /^\/products(\/|$)/,
+  /^\/suppliers(\/|$)/
 ];
 
 const PUBLIC_PATTERNS = [

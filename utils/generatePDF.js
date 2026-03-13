@@ -1,7 +1,10 @@
 const PDFDocument = require('pdfkit');
+const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
 const templates = require('../data/templates');
+const { getPlanDefinition } = require('./planConfig');
+const { normalizeStoredAsset } = require('./assetStorage');
 
 const DEFAULT_INVOICE_COLORS = {
   primary: [37, 99, 235],
@@ -124,99 +127,199 @@ const resolveReceiptTemplate = (receipt) => {
   return resolveTemplateRecord(templateId, 'standard');
 };
 
+const resolveBusinessPlan = (business = {}) => {
+  const status = String(business?.subscription?.status || 'active').trim().toLowerCase();
+  if (status === 'expired') return 'starter';
+  return business?.subscription?.plan || 'starter';
+};
+
+const canRenderBusinessLogo = (business = {}) => {
+  const planDefinition = getPlanDefinition(resolveBusinessPlan(business));
+  return Boolean(planDefinition.allowCustomLogo && String(business?.logo || '').trim());
+};
+
+const loadBusinessLogoBuffer = async (logo) => {
+  const raw = String(logo || '').trim();
+  if (!raw) return null;
+
+  if (/^https?:\/\//i.test(raw)) {
+    try {
+      const response = await axios.get(raw, {
+        responseType: 'arraybuffer',
+        timeout: 10000
+      });
+      return Buffer.from(response.data);
+    } catch (error) {
+      return null;
+    }
+  }
+
+  const normalized = normalizeStoredAsset(raw);
+  if (!normalized) return null;
+
+  const absolutePath = path.isAbsolute(normalized)
+    ? normalized
+    : path.join(__dirname, '..', normalized);
+
+  try {
+    return await fs.promises.readFile(absolutePath);
+  } catch (error) {
+    return null;
+  }
+};
+
+const drawBusinessLogo = async (doc, business, options = {}) => {
+  if (!canRenderBusinessLogo(business)) return null;
+
+  const buffer = await loadBusinessLogoBuffer(business.logo);
+  if (!buffer) return null;
+
+  try {
+    const image = doc.openImage(buffer);
+    const sourceWidth = image?.width || 0;
+    const sourceHeight = image?.height || 0;
+    if (!sourceWidth || !sourceHeight) {
+      return null;
+    }
+
+    const maxWidth = Math.max(Number(options.maxWidth) || 72, 1);
+    const maxHeight = Math.max(Number(options.maxHeight) || 40, 1);
+    const scale = Math.min(maxWidth / sourceWidth, maxHeight / sourceHeight, 1);
+    const width = Math.max(1, sourceWidth * scale);
+    const height = Math.max(1, sourceHeight * scale);
+    const y = Number(options.y) || 0;
+    let x = Number(options.x) || 0;
+
+    if (options.align === 'center') {
+      x -= width / 2;
+    } else if (options.align === 'right') {
+      x -= width;
+    }
+
+    doc.image(buffer, x, y, { width, height });
+
+    return {
+      x,
+      y,
+      width,
+      height
+    };
+  } catch (error) {
+    return null;
+  }
+};
+
 // Generate invoice PDF
 exports.invoice = async (invoice, options = {}) => {
   return new Promise((resolve, reject) => {
-    try {
-      const doc = new PDFDocument({ size: 'A4', margin: 50 });
-      const buffers = [];
-      const template = resolveInvoiceTemplate(
-        invoice,
-        options.templateStyle || options.templateId || options.template
-      );
-      const colors = template.colors || {};
-      const layout = template.layout || {};
-      const fonts = template.fonts || {};
-      const primaryColor = normalizeColor(colors.primary, DEFAULT_INVOICE_COLORS.primary);
-      const secondaryColor = normalizeColor(colors.secondary, DEFAULT_INVOICE_COLORS.secondary);
-      const accentColor = normalizeColor(colors.accent, DEFAULT_INVOICE_COLORS.accent);
-      const textColor = normalizeColor(colors.text, DEFAULT_INVOICE_COLORS.text);
-      const borderColor = normalizeColor(colors.border, DEFAULT_INVOICE_COLORS.border);
-      const titleFont = resolvePdfFont(fonts.title, 'Helvetica-Bold');
-      const bodyFont = resolvePdfFont(fonts.body, 'Helvetica');
-      const accentFont = resolvePdfFont(fonts.accent, 'Helvetica-Bold');
-      const business = typeof invoice.business === 'object' ? invoice.business : {};
-      const customer = typeof invoice.customer === 'object' ? invoice.customer : {};
-      const currency = invoice.currency || 'USD';
-      const leftX = 50;
-      const rightX = 500;
-      
-      doc.on('data', buffers.push.bind(buffers));
-      doc.on('end', () => {
-        const pdfData = Buffer.concat(buffers);
-        resolve(pdfData);
-      });
+    (async () => {
+      try {
+        const doc = new PDFDocument({ size: 'A4', margin: 50 });
+        const buffers = [];
+        const template = resolveInvoiceTemplate(
+          invoice,
+          options.templateStyle || options.templateId || options.template
+        );
+        const colors = template.colors || {};
+        const layout = template.layout || {};
+        const fonts = template.fonts || {};
+        const primaryColor = normalizeColor(colors.primary, DEFAULT_INVOICE_COLORS.primary);
+        const secondaryColor = normalizeColor(colors.secondary, DEFAULT_INVOICE_COLORS.secondary);
+        const accentColor = normalizeColor(colors.accent, DEFAULT_INVOICE_COLORS.accent);
+        const textColor = normalizeColor(colors.text, DEFAULT_INVOICE_COLORS.text);
+        const borderColor = normalizeColor(colors.border, DEFAULT_INVOICE_COLORS.border);
+        const titleFont = resolvePdfFont(fonts.title, 'Helvetica-Bold');
+        const bodyFont = resolvePdfFont(fonts.body, 'Helvetica');
+        const accentFont = resolvePdfFont(fonts.accent, 'Helvetica-Bold');
+        const business = typeof invoice.business === 'object' ? invoice.business : {};
+        const customer = typeof invoice.customer === 'object' ? invoice.customer : {};
+        const currency = invoice.currency || 'USD';
+        const leftX = 50;
+        const rightX = 500;
 
-      if (layout.showWatermark) {
-        const watermarkText = String(layout.watermarkText || template.name || 'INVOICE').toUpperCase();
-        doc.save();
-        doc.opacity(0.06);
-        doc.fillColor(secondaryColor).font(titleFont).fontSize(68);
-        doc.rotate(-30, { origin: [doc.page.width / 2, doc.page.height / 2] });
-        doc.text(watermarkText, -80, doc.page.height / 2 - 30, {
-          width: doc.page.width + 160,
-          align: 'center',
+        doc.on('data', buffers.push.bind(buffers));
+        doc.on('error', reject);
+        doc.on('end', () => {
+          const pdfData = Buffer.concat(buffers);
+          resolve(pdfData);
         });
-        doc.restore();
-        doc.opacity(1);
-      }
 
-      // Header
-      if (layout.showHeaderBorder) {
-        doc.rect(0, 0, doc.page.width, 72).fill(primaryColor);
+        if (layout.showWatermark) {
+          const watermarkText = String(layout.watermarkText || template.name || 'INVOICE').toUpperCase();
+          doc.save();
+          doc.opacity(0.06);
+          doc.fillColor(secondaryColor).font(titleFont).fontSize(68);
+          doc.rotate(-30, { origin: [doc.page.width / 2, doc.page.height / 2] });
+          doc.text(watermarkText, -80, doc.page.height / 2 - 30, {
+            width: doc.page.width + 160,
+            align: 'center',
+          });
+          doc.restore();
+          doc.opacity(1);
+        }
+
+        // Header
+        if (layout.showHeaderBorder) {
+          doc.rect(0, 0, doc.page.width, 72).fill(primaryColor);
+          await drawBusinessLogo(doc, business, {
+            x: 52,
+            y: 16,
+            maxWidth: 58,
+            maxHeight: 36
+          });
+          doc
+            .fillColor([255, 255, 255])
+            .font(titleFont)
+            .fontSize(20)
+            .text(business.name || '', 0, 18, { align: 'center', width: doc.page.width });
+          doc
+            .font(bodyFont)
+            .fontSize(9)
+            .text(
+              `${business.address?.street || ''} ${business.address?.city || ''}`.trim(),
+              0,
+              44,
+              { align: 'center', width: doc.page.width }
+            );
+          doc.y = 88;
+        } else {
+          const logoPlacement = await drawBusinessLogo(doc, business, {
+            x: doc.page.width / 2,
+            y: 24,
+            maxWidth: 96,
+            maxHeight: 52,
+            align: 'center'
+          });
+          if (logoPlacement) {
+            doc.y = logoPlacement.y + logoPlacement.height + 10;
+          }
+          doc
+            .fillColor(primaryColor)
+            .font(titleFont)
+            .fontSize(20)
+            .text(business.name || '', { align: 'center' })
+            .moveDown(0.3);
+        }
+
         doc
-          .fillColor([255, 255, 255])
-          .font(titleFont)
-          .fontSize(20)
-          .text(business.name || '', 0, 18, { align: 'center', width: doc.page.width });
-        doc
+          .fillColor(textColor)
           .font(bodyFont)
-          .fontSize(9)
+          .fontSize(10)
+          .text(business.address?.street || '', { align: 'center' })
           .text(
-            `${business.address?.street || ''} ${business.address?.city || ''}`.trim(),
-            0,
-            44,
-            { align: 'center', width: doc.page.width }
-          );
-        doc.y = 88;
-      } else {
-        doc
-          .fillColor(primaryColor)
-          .font(titleFont)
-          .fontSize(20)
-          .text(business.name || '', { align: 'center' })
-          .moveDown(0.3);
-      }
-      
-      doc
-        .fillColor(textColor)
-        .font(bodyFont)
-        .fontSize(10)
-        .text(business.address?.street || '', { align: 'center' })
-        .text(
-          `${business.address?.city || ''}, ${business.address?.state || ''} ${business.address?.postalCode || ''}`.trim(),
-          { align: 'center' }
-        )
-        .text(`Phone: ${business.phone || ''} | Email: ${business.email || ''}`, { align: 'center' })
-        .moveDown(1);
+            `${business.address?.city || ''}, ${business.address?.state || ''} ${business.address?.postalCode || ''}`.trim(),
+            { align: 'center' }
+          )
+          .text(`Phone: ${business.phone || ''} | Email: ${business.email || ''}`, { align: 'center' })
+          .moveDown(1);
 
       // Invoice title
-      doc
-        .fillColor(primaryColor)
-        .font(accentFont)
-        .fontSize(16)
-        .text('INVOICE', { align: 'center', underline: true })
-        .moveDown(1);
+        doc
+          .fillColor(primaryColor)
+          .font(accentFont)
+          .fontSize(16)
+          .text('INVOICE', { align: 'center', underline: true })
+          .moveDown(1);
 
       doc
         .strokeColor(secondaryColor)
@@ -440,49 +543,68 @@ exports.invoice = async (invoice, options = {}) => {
           .text(business.name || '', { align: 'center' });
       }
 
-      doc.end();
-    } catch (error) {
-      reject(error);
-    }
+        doc.end();
+      } catch (error) {
+        reject(error);
+      }
+    })();
   });
 };
 
 // Generate receipt PDF
 exports.receipt = async (receipt) => {
   return new Promise((resolve, reject) => {
-    try {
-      const doc = new PDFDocument({ size: 'A6', margin: 20 });
-      const buffers = [];
-      const template = resolveReceiptTemplate(receipt);
-      const colors = template.colors || {};
-      const primaryColor = normalizeColor(colors.primary, DEFAULT_RECEIPT_COLORS.primary);
-      const secondaryColor = normalizeColor(colors.secondary, DEFAULT_RECEIPT_COLORS.secondary);
-      const accentColor = normalizeColor(colors.accent, DEFAULT_RECEIPT_COLORS.accent);
-      const textColor = normalizeColor(colors.text, DEFAULT_RECEIPT_COLORS.text);
-      const pageWidth = doc.page.width;
-      
-      doc.on('data', buffers.push.bind(buffers));
-      doc.on('end', () => {
-        const pdfData = Buffer.concat(buffers);
-        resolve(pdfData);
-      });
+    (async () => {
+      try {
+        const doc = new PDFDocument({ size: 'A6', margin: 20 });
+        const buffers = [];
+        const template = resolveReceiptTemplate(receipt);
+        const colors = template.colors || {};
+        const primaryColor = normalizeColor(colors.primary, DEFAULT_RECEIPT_COLORS.primary);
+        const secondaryColor = normalizeColor(colors.secondary, DEFAULT_RECEIPT_COLORS.secondary);
+        const accentColor = normalizeColor(colors.accent, DEFAULT_RECEIPT_COLORS.accent);
+        const textColor = normalizeColor(colors.text, DEFAULT_RECEIPT_COLORS.text);
+        const pageWidth = doc.page.width;
+        
+        doc.on('data', buffers.push.bind(buffers));
+        doc.on('error', reject);
+        doc.on('end', () => {
+          const pdfData = Buffer.concat(buffers);
+          resolve(pdfData);
+        });
 
-      // Header
-      const headerHeight = template?.layout?.showHeaderBorder ? 28 : 0;
-      if (headerHeight) {
-        doc.rect(0, 0, pageWidth, headerHeight).fill(primaryColor);
-        doc.fillColor('white')
-          .fontSize(12)
-          .text(receipt.business.name, 0, 10, { align: 'center', width: pageWidth });
-        doc.fillColor(textColor);
-        doc.y = headerHeight + 6;
-      } else {
-        doc
-          .fillColor(primaryColor)
-          .fontSize(14)
-          .text(receipt.business.name, { align: 'center' })
-          .moveDown(0.2);
-      }
+        // Header
+        const headerHeight = template?.layout?.showHeaderBorder ? 28 : 0;
+        if (headerHeight) {
+          doc.rect(0, 0, pageWidth, headerHeight).fill(primaryColor);
+          await drawBusinessLogo(doc, receipt.business, {
+            x: 18,
+            y: 5,
+            maxWidth: 24,
+            maxHeight: 16
+          });
+          doc.fillColor('white')
+            .fontSize(12)
+            .text(receipt.business.name, 0, 10, { align: 'center', width: pageWidth });
+          doc.fillColor(textColor);
+          doc.y = headerHeight + 6;
+        } else {
+          const logoPlacement = await drawBusinessLogo(doc, receipt.business, {
+            x: pageWidth / 2,
+            y: 18,
+            maxWidth: 46,
+            maxHeight: 24,
+            align: 'center'
+          });
+          if (logoPlacement) {
+            doc.y = logoPlacement.y + logoPlacement.height + 6;
+          }
+          doc
+            .fillColor(primaryColor)
+            .fontSize(14)
+            .text(receipt.business.name, { align: 'center' })
+            .moveDown(0.2);
+        }
 
       doc
         .fillColor(textColor)
@@ -549,9 +671,10 @@ exports.receipt = async (receipt) => {
         .text(receipt.business.name, { align: 'center' })
         .text(new Date().toLocaleString(), { align: 'center' });
 
-      doc.end();
-    } catch (error) {
-      reject(error);
-    }
+        doc.end();
+      } catch (error) {
+        reject(error);
+      }
+    })();
   });
 };

@@ -1,46 +1,8 @@
 const multer = require('multer');
 const path = require('path');
-const fs = require('fs');
 const ErrorResponse = require('../utils/errorResponse');
 
-// Ensure upload directories exist
-const directories = [
-  'uploads/logos',
-  'uploads/products',
-  'uploads/documents',
-  'uploads/profile'
-];
-
-directories.forEach(dir => {
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
-});
-
-// Set storage engine
-const storage = multer.diskStorage({
-  destination: function (req, file, cb) {
-    let uploadPath = 'uploads/';
-    
-    if (file.fieldname === 'logo') {
-      uploadPath += 'logos/';
-    } else if (file.fieldname === 'productImage') {
-      uploadPath += 'products/';
-    } else if (file.fieldname === 'profileImage') {
-      uploadPath += 'profile/';
-    } else {
-      uploadPath += 'documents/';
-    }
-    
-    cb(null, uploadPath);
-  },
-  filename: function (req, file, cb) {
-    cb(
-      null,
-      file.fieldname + '-' + Date.now() + path.extname(file.originalname)
-    );
-  }
-});
+const storage = multer.memoryStorage();
 
 // Check file type
 function checkFileType(file, cb) {
@@ -80,7 +42,7 @@ function checkFileType(file, cb) {
 
 // Init upload
 const upload = multer({
-  storage: storage,
+  storage,
   limits: {
     fileSize: 10 * 1024 * 1024
   },

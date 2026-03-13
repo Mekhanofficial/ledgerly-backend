@@ -14,12 +14,17 @@ const {
   removePaystackSettings
 } = require('../controllers/businessController');
 const { protect, authorize } = require('../middleware/auth');
+const uploadImage = require('../middleware/uploadImage');
 
 router.use(protect);
 
 router.route('/')
   .get(authorize('admin', 'accountant', 'staff', 'viewer'), getBusinessProfile)
-  .put(authorize('super_admin', 'admin', 'accountant'), updateBusinessProfile);
+  .put(
+    authorize('super_admin', 'admin', 'accountant'),
+    uploadImage.single('logo'),
+    updateBusinessProfile
+  );
 
 router.get('/payment-methods', authorize('admin', 'accountant'), getPaymentMethods);
 router.post('/payment-methods', authorize('admin', 'accountant'), addPaymentMethod);

@@ -10,9 +10,9 @@ const {
 } = require('../controllers/productController');
 const { protect, authorize } = require('../middleware/auth');
 const { checkFeatureAccess } = require('../middleware/subscription');
-const uploadImage = require('../middleware/uploadImage');
+const uploadCloudinaryImage = require('../middleware/uploadImage');
 
-const uploadProductImage = uploadImage.fields([
+const uploadProductImage = uploadCloudinaryImage.fields([
   { name: 'image', maxCount: 1 },
   { name: 'productImage', maxCount: 1 }
 ]);

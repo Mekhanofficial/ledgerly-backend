@@ -1,4 +1,3 @@
-const fs = require('fs');
 const path = require('path');
 const Document = require('../models/Document');
 const Business = require('../models/Business');
@@ -6,6 +5,11 @@ const ErrorResponse = require('../utils/errorResponse');
 const asyncHandler = require('../utils/asyncHandler');
 const { normalizePlanId } = require('../utils/planConfig');
 const { resolveBillingOwner, resolveEffectivePlan } = require('../utils/subscriptionService');
+const {
+  normalizeStoredAsset,
+  removeStoredAsset,
+  uploadCloudinaryFile
+} = require('../utils/assetStorage');
 
 const parsePositiveInt = (value, fallback) => {
   const parsed = Number.parseInt(String(value ?? ''), 10);
@@ -49,22 +53,6 @@ const isDocumentTypeAllowed = (rules, mimeType, extension) => {
   if (rules.allowedExtensions.has(ext)) return true;
   if (rules.allowImages && mime.startsWith('image/')) return true;
   return false;
-};
-
-const resolveFilePath = (filePath) => {
-  if (!filePath) return null;
-  if (path.isAbsolute(filePath)) return filePath;
-  return path.join(process.cwd(), filePath);
-};
-
-const removeFile = (filePath) => {
-  const absolutePath = resolveFilePath(filePath);
-  if (!absolutePath) return;
-  fs.unlink(absolutePath, (err) => {
-    if (err && err.code !== 'ENOENT') {
-      console.error('Failed to remove document file:', err);
-    }
-  });
 };
 
 const mapDocumentResponse = (doc) => ({
@@ -135,7 +123,6 @@ exports.uploadDocument = asyncHandler(async (req, res, next) => {
   const fileSize = Number(req.file.size) || 0;
 
   if (!isDocumentTypeAllowed(documentRules, req.file.mimetype, extension)) {
-    removeFile(req.file.path);
     return next(
       new ErrorResponse(
         'File type is not allowed for your plan.',
@@ -158,7 +145,6 @@ exports.uploadDocument = asyncHandler(async (req, res, next) => {
   const existingCount = Number(usage?.count || 0);
   const existingStorage = Number(usage?.totalSize || 0);
   if (existingCount >= documentRules.maxDocuments) {
-    removeFile(req.file.path);
     return next(
       new ErrorResponse(
         `Document limit reached for your plan (${documentRules.maxDocuments}). Upgrade to upload more.`,
@@ -168,7 +154,6 @@ exports.uploadDocument = asyncHandler(async (req, res, next) => {
   }
 
   if (existingStorage + fileSize > documentRules.maxStorageBytes) {
-    removeFile(req.file.path);
     return next(
       new ErrorResponse(
         `Storage limit reached for your plan (${Math.round(documentRules.maxStorageBytes / MB)}MB).`,
@@ -178,19 +163,37 @@ exports.uploadDocument = asyncHandler(async (req, res, next) => {
   }
 
   const resolvedName = (req.body.name || originalName || 'Untitled document').toString().trim();
-  const filePath = req.file.path.split(path.sep).join('/');
-
-  const document = await Document.create({
-    business: business._id,
-    uploadedBy: req.user.id,
-    name: resolvedName,
-    originalName,
-    fileName: req.file.filename,
-    filePath,
-    mimeType: req.file.mimetype,
-    size: req.file.size,
-    type: req.body.type === 'scan' ? 'scan' : 'document'
+  const uploadedFile = await uploadCloudinaryFile(req.file, {
+    assetType: 'document',
+    fileName: resolvedName || originalName || 'document',
+    resourceType: 'auto'
   });
+
+  let document;
+  try {
+    document = await Document.create({
+      business: business._id,
+      uploadedBy: req.user.id,
+      name: resolvedName,
+      originalName,
+      fileName: originalName || req.file.originalname,
+      filePath: normalizeStoredAsset(uploadedFile?.url),
+      filePublicId: uploadedFile?.publicId || '',
+      fileResourceType: uploadedFile?.resourceType || 'raw',
+      mimeType: req.file.mimetype,
+      size: req.file.size,
+      type: req.body.type === 'scan' ? 'scan' : 'document'
+    });
+  } catch (error) {
+    if (uploadedFile?.url) {
+      await removeStoredAsset({
+        url: uploadedFile.url,
+        publicId: uploadedFile.publicId,
+        resourceType: uploadedFile.resourceType || 'raw'
+      });
+    }
+    throw error;
+  }
 
   res.status(201).json({
     success: true,
@@ -211,7 +214,11 @@ exports.deleteDocument = asyncHandler(async (req, res, next) => {
   }
 
   await document.deleteOne();
-  removeFile(document.filePath);
+  await removeStoredAsset({
+    url: document.filePath,
+    publicId: document.filePublicId,
+    resourceType: document.fileResourceType || 'raw'
+  });
 
   res.status(200).json({
     success: true,

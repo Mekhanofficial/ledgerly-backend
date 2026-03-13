@@ -10,6 +10,7 @@ const sendEmail = require('../utils/email');
 const generatePDF = require('../utils/generatePDF');
 const { calculateInvoiceTotals, toNumber } = require('../utils/invoiceCalculator');
 const { getTaxSettings } = require('../utils/taxSettings');
+const { getPlanDefinition } = require('../utils/planConfig');
 const invoiceTemplates = require('../data/templates');
 
 const escapeHtml = (value) =>
@@ -84,21 +85,38 @@ const formatDisplayDate = (value) => {
   return date.toLocaleDateString();
 };
 
-const buildReceiptEmailHtml = ({ context, templateMeta }) => {
+const resolveBusinessLogoUrl = (business = {}) => {
+  const status = String(business?.subscription?.status || 'active').trim().toLowerCase();
+  const plan = status === 'expired' ? 'starter' : business?.subscription?.plan;
+  const planDefinition = getPlanDefinition(plan);
+  if (!planDefinition.allowCustomLogo) return '';
+  return String(business?.logo || '').trim();
+};
+
+const buildReceiptEmailHtml = ({ receipt, context, templateMeta }) => {
   const colors = templateMeta?.colors || {};
   const primary = resolveCssColor(colors.primary, '#2563eb');
   const secondary = resolveCssColor(colors.secondary, '#3b82f6');
   const accent = resolveCssColor(colors.accent, '#eff6ff');
   const text = resolveCssColor(colors.text, '#1f2937');
   const templateName = templateMeta?.name || 'Standard';
+  const logoUrl = resolveBusinessLogoUrl(receipt?.business);
+  const logoMarkup = logoUrl
+    ? `<img src="${escapeHtml(logoUrl)}" alt="${escapeHtml(context.businessName)} logo" style="display:block;max-width:140px;max-height:56px;width:auto;height:auto;" />`
+    : '';
 
   return `
     <div style="margin:0;padding:24px;background:#f8fafc;font-family:Arial,sans-serif;">
       <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="max-width:640px;margin:0 auto;background:#fff;border:1px solid #e2e8f0;border-radius:10px;overflow:hidden;">
         <tr>
           <td style="padding:20px;background:linear-gradient(90deg, ${primary} 0%, ${secondary} 100%);">
-            <div style="font-size:22px;font-weight:700;color:#fff;">${escapeHtml(context.businessName)}</div>
-            <div style="font-size:12px;color:#dbeafe;margin-top:6px;">Receipt Template: ${escapeHtml(templateName)}</div>
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:16px;">
+              <div>
+                <div style="font-size:22px;font-weight:700;color:#fff;">${escapeHtml(context.businessName)}</div>
+                <div style="font-size:12px;color:#dbeafe;margin-top:6px;">Receipt Template: ${escapeHtml(templateName)}</div>
+              </div>
+              ${logoMarkup ? `<div style="flex-shrink:0;">${logoMarkup}</div>` : ''}
+            </div>
           </td>
         </tr>
         <tr>
@@ -631,6 +649,7 @@ exports.emailReceipt = asyncHandler(async (req, res, next) => {
       subject: `Receipt ${receipt.receiptNumber} from ${receipt.business.name}`,
       text: `Receipt ${mailContext.receiptNumber}. Amount paid: ${mailContext.amountPaid} ${mailContext.currency}.`,
       html: buildReceiptEmailHtml({
+        receipt,
         context: mailContext,
         templateMeta
       }),
