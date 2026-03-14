@@ -1,4 +1,5 @@
 const fs = require('fs');
+const crypto = require('crypto');
 const path = require('path');
 const ErrorResponse = require('./errorResponse');
 const {
@@ -10,6 +11,16 @@ const {
 } = require('./cloudinary');
 
 const DEFAULT_PROFILE_IMAGE = 'uploads/profile/default-avatar.png';
+const LOCAL_UPLOAD_FALLBACK_ENABLED = String(process.env.LOCAL_UPLOAD_FALLBACK_ENABLED || 'true')
+  .trim()
+  .toLowerCase() !== 'false';
+
+const localFolderMap = {
+  profile: 'profile',
+  logo: 'logos',
+  product: 'products',
+  document: 'documents'
+};
 
 const normalizeStoredAsset = (value) => {
   const raw = String(value || '').trim();
@@ -37,6 +48,115 @@ const isRemoteAsset = (value) => /^https?:\/\//i.test(String(value || '').trim()
 const isLocalUploadAsset = (value) => /^uploads\//i.test(normalizeStoredAsset(value));
 
 const normalizeBaseUrl = (value) => String(value || '').trim().replace(/\/+$/, '');
+
+const sanitizeFileSegment = (value, fallback = 'asset') => {
+  const baseName = path.parse(String(value || fallback)).name || fallback;
+  const sanitized = baseName
+    .replace(/[^a-zA-Z0-9_-]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+    .toLowerCase();
+  return sanitized || fallback;
+};
+
+const mimeTypeExtensionMap = {
+  'image/jpeg': '.jpg',
+  'image/jpg': '.jpg',
+  'image/pjpeg': '.jpg',
+  'image/png': '.png',
+  'image/gif': '.gif',
+  'image/webp': '.webp',
+  'image/avif': '.avif',
+  'image/heic': '.heic',
+  'image/heif': '.heif',
+  'image/svg+xml': '.svg',
+  'application/pdf': '.pdf'
+};
+
+const resolveFileExtension = (file, fallback = '.bin') => {
+  const fromOriginalName = path.extname(String(file?.originalname || '')).trim().toLowerCase();
+  if (fromOriginalName) {
+    return fromOriginalName;
+  }
+
+  const fromMimeType = mimeTypeExtensionMap[String(file?.mimetype || '').trim().toLowerCase()];
+  return fromMimeType || fallback;
+};
+
+const resolveLocalAssetFolder = (assetType) =>
+  localFolderMap[assetType] || 'assets';
+
+const uploadLocalFile = async (
+  file,
+  {
+    assetType = 'asset',
+    fileName = '',
+    resourceType = 'auto',
+    extensionFallback = '.bin'
+  } = {}
+) => {
+  if (!file?.buffer) return null;
+
+  const folderName = resolveLocalAssetFolder(assetType);
+  const uploadsRoot = path.join(__dirname, '..', 'uploads', folderName);
+  await fs.promises.mkdir(uploadsRoot, { recursive: true });
+
+  const safeBaseName = sanitizeFileSegment(fileName || file.originalname || assetType || 'asset');
+  const extension = resolveFileExtension(file, extensionFallback);
+  const suffix = `${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
+  const outputFileName = `${safeBaseName}-${suffix}${extension}`;
+  const outputPath = path.join(uploadsRoot, outputFileName);
+
+  await fs.promises.writeFile(outputPath, file.buffer);
+
+  return {
+    url: normalizeStoredAsset(path.join('uploads', folderName, outputFileName)),
+    publicId: '',
+    resourceType
+  };
+};
+
+const uploadWithLocalFallback = async (
+  file,
+  {
+    assetType = 'asset',
+    fileName = '',
+    resourceType = 'auto',
+    extensionFallback = '.bin',
+    cloudinaryUploader
+  } = {}
+) => {
+  if (!file?.buffer) return null;
+
+  const fallbackToLocal = async (reason) => {
+    if (!LOCAL_UPLOAD_FALLBACK_ENABLED) {
+      throw reason;
+    }
+    console.warn('Cloudinary upload unavailable, using local uploads fallback.', {
+      assetType,
+      reason: reason?.message || reason
+    });
+    return uploadLocalFile(file, {
+      assetType,
+      fileName,
+      resourceType,
+      extensionFallback
+    });
+  };
+
+  if (!hasCloudinaryCredentials()) {
+    return fallbackToLocal(new ErrorResponse(
+      'Cloudinary is not configured. Set CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, and CLOUDINARY_API_SECRET.',
+      503
+    ));
+  }
+
+  try {
+    return await cloudinaryUploader();
+  } catch (error) {
+    return fallbackToLocal(error);
+  }
+};
 
 const getConfiguredServerBaseUrl = () => {
   const configured = normalizeBaseUrl(
@@ -104,45 +224,49 @@ const resolveCloudinaryFolder = (assetType) => {
 
 const uploadCloudinaryImage = async (file, { assetType, fileName } = {}) => {
   if (!file?.buffer) return null;
-  if (!hasCloudinaryCredentials()) {
-    throw new ErrorResponse(
-      'Cloudinary is not configured. Set CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, and CLOUDINARY_API_SECRET.',
-      503
-    );
-  }
 
-  const uploadResult = await uploadImageBuffer(file.buffer, {
-    folder: resolveCloudinaryFolder(assetType),
-    fileName: fileName || file.originalname || assetType || 'image'
+  return uploadWithLocalFallback(file, {
+    assetType,
+    fileName: fileName || file.originalname || assetType || 'image',
+    resourceType: 'image',
+    extensionFallback: '.jpg',
+    cloudinaryUploader: async () => {
+      const uploadResult = await uploadImageBuffer(file.buffer, {
+        folder: resolveCloudinaryFolder(assetType),
+        fileName: fileName || file.originalname || assetType || 'image'
+      });
+
+      return {
+        url: uploadResult?.secure_url || uploadResult?.url || '',
+        publicId: uploadResult?.public_id || '',
+        resourceType: uploadResult?.resource_type || 'image'
+      };
+    }
   });
-
-  return {
-    url: uploadResult?.secure_url || uploadResult?.url || '',
-    publicId: uploadResult?.public_id || '',
-    resourceType: uploadResult?.resource_type || 'image'
-  };
 };
 
 const uploadCloudinaryFile = async (file, { assetType, fileName, resourceType = 'auto' } = {}) => {
   if (!file?.buffer) return null;
-  if (!hasCloudinaryCredentials()) {
-    throw new ErrorResponse(
-      'Cloudinary is not configured. Set CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, and CLOUDINARY_API_SECRET.',
-      503
-    );
-  }
 
-  const uploadResult = await uploadBuffer(file.buffer, {
-    folder: resolveCloudinaryFolder(assetType),
+  return uploadWithLocalFallback(file, {
+    assetType,
     fileName: fileName || file.originalname || assetType || 'file',
-    resourceType
-  });
+    resourceType,
+    extensionFallback: '.bin',
+    cloudinaryUploader: async () => {
+      const uploadResult = await uploadBuffer(file.buffer, {
+        folder: resolveCloudinaryFolder(assetType),
+        fileName: fileName || file.originalname || assetType || 'file',
+        resourceType
+      });
 
-  return {
-    url: uploadResult?.secure_url || uploadResult?.url || '',
-    publicId: uploadResult?.public_id || '',
-    resourceType: uploadResult?.resource_type || resourceType
-  };
+      return {
+        url: uploadResult?.secure_url || uploadResult?.url || '',
+        publicId: uploadResult?.public_id || '',
+        resourceType: uploadResult?.resource_type || resourceType
+      };
+    }
+  });
 };
 
 const removeLocalAsset = async (value) => {
