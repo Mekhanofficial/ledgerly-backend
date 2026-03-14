@@ -620,13 +620,13 @@ exports.emailReceipt = asyncHandler(async (req, res, next) => {
   );
   const defaultAttachmentFileName = sanitizeAttachmentFileName(`receipt-${receipt.receiptNumber}.pdf`);
   const frontendPdfAttachment = resolveFrontendPdfAttachment(req.body, defaultAttachmentFileName);
-  if (!frontendPdfAttachment?.buffer) {
-    return next(new ErrorResponse(
-      'Frontend receipt PDF attachment is required. Please regenerate the receipt PDF and try again.',
-      400
-    ));
+  const attachmentFileName = frontendPdfAttachment?.fileName || defaultAttachmentFileName;
+  const pdfBuffer = frontendPdfAttachment?.buffer || null;
+  if (!pdfBuffer) {
+    console.warn('Sending receipt email without PDF attachment because frontend receipt PDF payload is missing.', {
+      receiptId: receipt._id?.toString?.() || receipt._id
+    });
   }
-  const attachmentFileName = frontendPdfAttachment.fileName || defaultAttachmentFileName;
 
   const templateMeta = resolveTemplateMeta(requestedTemplateStyle);
   const mailContext = {
@@ -640,8 +640,6 @@ exports.emailReceipt = asyncHandler(async (req, res, next) => {
     currency: receipt.currency || receipt.invoice?.currency || receipt.business?.currency || 'USD'
   };
 
-  const pdfBuffer = frontendPdfAttachment.buffer;
-  
   try {
     await sendEmail({
       businessId: req.user.business,
@@ -653,11 +651,13 @@ exports.emailReceipt = asyncHandler(async (req, res, next) => {
         context: mailContext,
         templateMeta
       }),
-      attachments: [{
-        filename: attachmentFileName,
-        content: pdfBuffer,
-        contentType: 'application/pdf'
-      }]
+      attachments: pdfBuffer
+        ? [{
+          filename: attachmentFileName,
+          content: pdfBuffer,
+          contentType: 'application/pdf'
+        }]
+        : undefined
     });
   } catch (error) {
     return next(new ErrorResponse(error?.message || 'Unable to send receipt email', 502));

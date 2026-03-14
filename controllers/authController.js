@@ -408,9 +408,10 @@ exports.login = asyncHandler(async (req, res, next) => {
     return next(new ErrorResponse('Invalid credentials', 401));
   }
 
-  // Update last login
-  user.lastLogin = Date.now();
-  await user.save();
+  // Persist last login asynchronously so authentication response is not blocked.
+  User.findByIdAndUpdate(user._id, { $set: { lastLogin: new Date() } }).catch((error) => {
+    console.warn('Unable to persist lastLogin timestamp:', error?.message || error);
+  });
 
   sendTokenResponse(user, 200, res);
 });

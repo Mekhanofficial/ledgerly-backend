@@ -399,11 +399,18 @@ const sendPublicPaidInvoiceReceiptEmail = async ({
     { pdfAttachment },
     attachmentFileName
   );
-  if (!frontendPdfAttachment?.buffer) {
-    throw new ErrorResponse(
-      'Frontend receipt PDF attachment is required. Please regenerate the receipt PDF and try again.',
-      400
-    );
+  const attachments = frontendPdfAttachment?.buffer
+    ? [{
+      filename: frontendPdfAttachment.fileName || attachmentFileName,
+      content: frontendPdfAttachment.buffer,
+      contentType: 'application/pdf'
+    }]
+    : undefined;
+
+  if (!attachments) {
+    console.warn('Sending public payment receipt email without PDF attachment because frontend receipt PDF payload is missing.', {
+      invoiceId: invoice?._id?.toString?.() || invoice?._id
+    });
   }
 
   const customerName =
@@ -441,11 +448,7 @@ const sendPublicPaidInvoiceReceiptEmail = async ({
       amountPaid: amountPaidText,
       paymentMethod: receipt.paymentMethod || invoice.paymentMethod || 'online'
     },
-    attachments: [{
-      filename: frontendPdfAttachment.fileName || attachmentFileName,
-      content: frontendPdfAttachment.buffer,
-      contentType: 'application/pdf'
-    }]
+    attachments
   });
 
   receipt.emailSentAt = new Date();

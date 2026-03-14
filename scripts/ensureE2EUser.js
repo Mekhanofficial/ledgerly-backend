@@ -7,6 +7,13 @@ const { getDefaultPermissions } = require('../utils/rolePermissions');
 
 dotenv.config();
 
+const DEFAULT_E2E_EMAIL = 'qa.admin@ledgerly.com';
+const DEFAULT_E2E_PASSWORD = 'qaadmin123';
+const DEFAULT_E2E_NAME = 'QA Admin';
+const DEFAULT_E2E_BUSINESS_NAME = 'Ledgerly QA';
+const DEFAULT_E2E_BUSINESS_PHONE = '0000000000';
+const ACTIVE_SUBSCRIPTION_DAYS = 365;
+
 const getEnv = (names) => {
   for (const name of names) {
     const value = process.env[name];
@@ -17,20 +24,25 @@ const getEnv = (names) => {
   return '';
 };
 
-const email = getEnv(['SUPERADMIN_EMAIL', 'ADMIN_EMAIL']);
-const password = getEnv(['SUPERADMIN_PASSWORD', 'ADMIN_PASSWORD']);
-const name = getEnv(['SUPERADMIN_NAME', 'ADMIN_NAME']) || 'Super Admin';
-const userPhone = getEnv(['SUPERADMIN_PHONE', 'ADMIN_PHONE']);
-const businessName = getEnv(['SUPERADMIN_BUSINESS_NAME', 'ADMIN_BUSINESS_NAME']) || 'Ledgerly HQ';
-const businessEmail = getEnv(['SUPERADMIN_BUSINESS_EMAIL', 'ADMIN_BUSINESS_EMAIL']) || email;
-const businessPhone = getEnv(['SUPERADMIN_BUSINESS_PHONE', 'ADMIN_BUSINESS_PHONE']) || userPhone || '0000000000';
-const businessId = getEnv(['SUPERADMIN_BUSINESS_ID', 'ADMIN_BUSINESS_ID']);
-const resetPasswordEnv = getEnv(['SUPERADMIN_RESET_PASSWORD', 'ADMIN_RESET_PASSWORD']) || 'true';
+const email = (getEnv(['E2E_USER_EMAIL', 'QA_USER_EMAIL']) || DEFAULT_E2E_EMAIL).toLowerCase();
+const password = getEnv(['E2E_USER_PASSWORD', 'QA_USER_PASSWORD']) || DEFAULT_E2E_PASSWORD;
+const name = getEnv(['E2E_USER_NAME', 'QA_USER_NAME']) || DEFAULT_E2E_NAME;
+const phone = getEnv(['E2E_USER_PHONE', 'QA_USER_PHONE']) || '';
+const businessId = getEnv(['E2E_BUSINESS_ID', 'QA_BUSINESS_ID']);
+const businessName = getEnv(['E2E_BUSINESS_NAME', 'QA_BUSINESS_NAME']) || DEFAULT_E2E_BUSINESS_NAME;
+const businessEmail = getEnv(['E2E_BUSINESS_EMAIL', 'QA_BUSINESS_EMAIL']) || email;
+const businessPhone = getEnv(['E2E_BUSINESS_PHONE', 'QA_BUSINESS_PHONE']) || DEFAULT_E2E_BUSINESS_PHONE;
+const resetPasswordEnv = getEnv(['E2E_RESET_PASSWORD', 'QA_RESET_PASSWORD']) || 'true';
 const shouldResetPassword = resetPasswordEnv.toLowerCase() !== 'false';
-const ACTIVE_SUBSCRIPTION_DAYS = 365;
+const superAdminEmail = getEnv(['SUPERADMIN_EMAIL', 'ADMIN_EMAIL']).toLowerCase();
 
 const log = (message) => {
-  console.log(`[ensure-superadmin] ${message}`);
+  console.log(`[ensure-e2e-user] ${message}`);
+};
+
+const exitWithError = (message) => {
+  console.error(`[ensure-e2e-user] ${message}`);
+  process.exit(1);
 };
 
 const getMongoUri = () => {
@@ -40,20 +52,18 @@ const getMongoUri = () => {
   return process.env.MONGODB_URI || process.env.MONGODB_ATLAS_URI;
 };
 
-const exitWithError = (message) => {
-  console.error(`[ensure-superadmin] ${message}`);
-  process.exit(1);
-};
-
-const ensureBusiness = async (user) => {
+const ensureBusiness = async () => {
   let business = null;
 
-  if (user?.business) {
-    business = await Business.findById(user.business);
+  if (businessId) {
+    business = await Business.findById(businessId);
   }
 
-  if (!business && businessId) {
-    business = await Business.findById(businessId);
+  if (!business && superAdminEmail) {
+    const superAdminUser = await User.findOne({ email: superAdminEmail }).select('business');
+    if (superAdminUser?.business) {
+      business = await Business.findById(superAdminUser.business);
+    }
   }
 
   if (!business && businessEmail) {
@@ -69,27 +79,22 @@ const ensureBusiness = async (user) => {
   }
 
   if (business) {
-    return { business, created: false };
+    return business;
   }
 
-  if (!businessEmail || !businessPhone) {
-    exitWithError('Missing business details. Provide SUPERADMIN_BUSINESS_EMAIL and SUPERADMIN_BUSINESS_PHONE.');
-  }
-
-  const createdBusiness = await Business.create({
+  business = await Business.create({
     name: businessName,
     email: businessEmail.toLowerCase(),
     phone: businessPhone,
     owner: null
   });
-
-  log(`Created business "${createdBusiness.name}" (${createdBusiness._id}).`);
-  return { business: createdBusiness, created: true };
+  log(`Created business "${business.name}" (${business._id}).`);
+  return business;
 };
 
-const ensureSuperAdmin = async () => {
+const ensureE2EUser = async () => {
   if (!email || !password) {
-    exitWithError('Missing SUPERADMIN_EMAIL and/or SUPERADMIN_PASSWORD (or ADMIN_EMAIL/ADMIN_PASSWORD).');
+    exitWithError('Missing E2E_USER_EMAIL and/or E2E_USER_PASSWORD.');
   }
 
   const mongoUri = getMongoUri();
@@ -102,17 +107,24 @@ const ensureSuperAdmin = async () => {
     useUnifiedTopology: true
   });
 
-  const normalizedEmail = email.toLowerCase();
-  let user = await User.findOne({ email: normalizedEmail }).select('+password');
-
-  const { business, created } = await ensureBusiness(user);
-  const permissions = getDefaultPermissions('super_admin');
+  const business = await ensureBusiness();
+  const permissions = getDefaultPermissions('admin');
   const now = new Date();
   const activeUntil = new Date(now.getTime() + ACTIVE_SUBSCRIPTION_DAYS * 24 * 60 * 60 * 1000);
 
+  let user = await User.findOne({ email }).select('+password');
   if (user) {
-    user.role = 'super_admin';
+    if (user.role === 'super_admin') {
+      exitWithError(
+        `E2E user email ${email} belongs to a super_admin. Use a dedicated non-super-admin email.`
+      );
+    }
+
+    user.name = user.name || name;
+    user.phone = user.phone || phone || undefined;
+    user.role = 'admin';
     user.permissions = permissions;
+    user.business = business._id;
     user.isActive = true;
     user.emailVerified = true;
     user.plan = 'enterprise';
@@ -122,23 +134,19 @@ const ensureSuperAdmin = async () => {
     user.invoiceLimit = 100000;
     user.invoiceCountThisMonth = 0;
     user.invoiceCountResetAt = now;
-    if (!user.name) user.name = name;
-    if (!user.business || String(user.business) !== String(business._id)) {
-      user.business = business._id;
-    }
     if (shouldResetPassword) {
       user.password = password;
     }
     await user.save();
-    log(`Updated user ${user.email} to super_admin.`);
+    log(`Updated existing E2E user ${user.email}.`);
   } else {
     user = await User.create({
       name,
-      email: normalizedEmail,
+      email,
       password,
-      phone: userPhone || undefined,
+      phone: phone || undefined,
       business: business._id,
-      role: 'super_admin',
+      role: 'admin',
       permissions,
       isActive: true,
       emailVerified: true,
@@ -150,20 +158,12 @@ const ensureSuperAdmin = async () => {
       invoiceCountThisMonth: 0,
       invoiceCountResetAt: now
     });
-    log(`Created super_admin user ${user.email}.`);
+    log(`Created E2E admin user ${user.email}.`);
   }
 
-  if (created || !business.owner) {
+  if (!business.owner || String(business.owner) !== String(user._id)) {
     business.owner = user._id;
-    await business.save();
-    log('Set business owner to super admin.');
-  } else {
-    const ownerExists = await User.exists({ _id: business.owner });
-    if (!ownerExists) {
-      business.owner = user._id;
-      await business.save();
-      log('Fixed missing business owner reference.');
-    }
+    log('Set business owner to E2E admin user.');
   }
 
   business.subscription = {
@@ -174,14 +174,15 @@ const ensureSuperAdmin = async () => {
     currentPeriodEnd: activeUntil,
     trialEndsAt: null
   };
+
   await business.save();
 
-  log('Done.');
+  log(`Done. E2E credentials => email: ${email}, password: ${password}`);
   await mongoose.disconnect();
   process.exit(0);
 };
 
-ensureSuperAdmin().catch((err) => {
-  console.error('[ensure-superadmin] Failed:', err.message);
+ensureE2EUser().catch((error) => {
+  console.error('[ensure-e2e-user] Failed:', error?.message || error);
   process.exit(1);
 });

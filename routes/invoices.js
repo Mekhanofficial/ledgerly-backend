@@ -42,7 +42,7 @@ router.use(protect);
 
 // Invoice routes
 router.route('/')
-  .get(authorize('admin', 'accountant', 'staff', 'viewer', 'client'), getInvoices)
+  .get(authorize('admin', 'accountant', 'staff', 'viewer', 'client', 'super_admin'), getInvoices)
   .post(
     authorize('admin', 'accountant', 'staff'),
     checkSubscription(),
@@ -51,13 +51,13 @@ router.route('/')
   );
 
 // Reports
-router.get('/outstanding', authorize('admin', 'accountant'), getOutstanding);
-router.get('/aging-report', authorize('admin', 'accountant'), getAgingReport);
+router.get('/outstanding', authorize('admin', 'accountant', 'super_admin'), getOutstanding);
+router.get('/aging-report', authorize('admin', 'accountant', 'super_admin'), getAgingReport);
 
 // Recurring invoices
 router.get(
   '/recurring',
-  authorize('admin', 'accountant', 'staff', 'viewer'),
+  authorize('admin', 'accountant', 'staff', 'viewer', 'super_admin'),
   getRecurringInvoices
 );
 router.post(
@@ -97,12 +97,12 @@ router.post(
 
 // Invoice actions
 router.post('/:id/send', authorize('admin', 'accountant', 'staff'), checkSubscription(), sendInvoice);
-router.get('/:id/pdf', authorize('admin', 'accountant', 'staff', 'viewer', 'client'), checkSubscription(), getInvoicePDF);
+router.get('/:id/pdf', authorize('admin', 'accountant', 'staff', 'viewer', 'client', 'super_admin'), checkSubscription(), getInvoicePDF);
 router.post('/:id/payment', authorize('admin', 'accountant', 'client'), recordPayment);
 router.post('/:id/reminder', authorize('admin', 'accountant'), sendReminder);
 
 router.route('/:id')
-  .get(authorize('admin', 'accountant', 'staff', 'viewer', 'client'), getInvoice)
+  .get(authorize('admin', 'accountant', 'staff', 'viewer', 'client', 'super_admin'), getInvoice)
   .put(authorize('admin', 'accountant', 'staff'), updateInvoice)
   .delete(authorize('super_admin'), deleteInvoice);
 

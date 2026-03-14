@@ -204,18 +204,50 @@ const BusinessSchema = new mongoose.Schema({
 
 // Update invoice number
 BusinessSchema.methods.getNextInvoiceNumber = async function() {
-  const nextNumber = this.invoiceSettings.nextNumber;
-  this.invoiceSettings.nextNumber += 1;
-  await this.save();
-  return `${this.invoiceSettings.prefix}-${String(nextNumber).padStart(5, '0')}`;
+  const snapshot = await this.constructor.findOneAndUpdate(
+    { _id: this._id },
+    { $inc: { 'invoiceSettings.nextNumber': 1 } },
+    {
+      new: false,
+      projection: {
+        'invoiceSettings.prefix': 1,
+        'invoiceSettings.nextNumber': 1
+      }
+    }
+  ).lean();
+
+  const prefix = String(
+    snapshot?.invoiceSettings?.prefix
+    || this.invoiceSettings?.prefix
+    || 'INV'
+  );
+  const nextNumber = Number(snapshot?.invoiceSettings?.nextNumber ?? this.invoiceSettings?.nextNumber ?? 1);
+  this.invoiceSettings.nextNumber = nextNumber + 1;
+  return `${prefix}-${String(nextNumber).padStart(5, '0')}`;
 };
 
 // Update receipt number
 BusinessSchema.methods.getNextReceiptNumber = async function() {
-  const nextNumber = this.receiptSettings.nextNumber;
-  this.receiptSettings.nextNumber += 1;
-  await this.save();
-  return `${this.receiptSettings.prefix}-${String(nextNumber).padStart(5, '0')}`;
+  const snapshot = await this.constructor.findOneAndUpdate(
+    { _id: this._id },
+    { $inc: { 'receiptSettings.nextNumber': 1 } },
+    {
+      new: false,
+      projection: {
+        'receiptSettings.prefix': 1,
+        'receiptSettings.nextNumber': 1
+      }
+    }
+  ).lean();
+
+  const prefix = String(
+    snapshot?.receiptSettings?.prefix
+    || this.receiptSettings?.prefix
+    || 'RCP'
+  );
+  const nextNumber = Number(snapshot?.receiptSettings?.nextNumber ?? this.receiptSettings?.nextNumber ?? 1);
+  this.receiptSettings.nextNumber = nextNumber + 1;
+  return `${prefix}-${String(nextNumber).padStart(5, '0')}`;
 };
 
 BusinessSchema.methods.setPaystackSecretKey = function(secretKey) {

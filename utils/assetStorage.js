@@ -36,12 +36,38 @@ const isRemoteAsset = (value) => /^https?:\/\//i.test(String(value || '').trim()
 
 const isLocalUploadAsset = (value) => /^uploads\//i.test(normalizeStoredAsset(value));
 
+const normalizeBaseUrl = (value) => String(value || '').trim().replace(/\/+$/, '');
+
+const getConfiguredServerBaseUrl = () => {
+  const configured = normalizeBaseUrl(
+    process.env.BACKEND_BASE_URL || process.env.SERVER_URL || ''
+  );
+  return configured || '';
+};
+
+const getRequestBaseUrl = (req) => {
+  const configured = getConfiguredServerBaseUrl();
+  if (configured) return configured;
+
+  if (!req) return '';
+
+  const forwardedProto = String(req.headers?.['x-forwarded-proto'] || '')
+    .split(',')[0]
+    .trim();
+  const protocol = forwardedProto || req.protocol || 'http';
+  const host = req.get?.('host') || req.headers?.host || '';
+  if (!host) return '';
+  return `${protocol}://${host}`;
+};
+
 const buildAssetUrl = (req, value) => {
   const normalized = normalizeStoredAsset(value);
   if (!normalized) return '';
   if (isRemoteAsset(normalized)) return normalized;
   if (isLocalUploadAsset(normalized)) {
-    return `${req.protocol}://${req.get('host')}/${normalized}`;
+    const baseUrl = getRequestBaseUrl(req);
+    if (!baseUrl) return `/${normalized}`;
+    return `${baseUrl}/${normalized}`;
   }
   return normalized;
 };

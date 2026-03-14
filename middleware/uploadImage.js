@@ -4,10 +4,53 @@ const ErrorResponse = require('../utils/errorResponse');
 
 const storage = multer.memoryStorage();
 
-const defaultImageExtensions = new Set(['.jpeg', '.jpg', '.png', '.webp']);
-const defaultImageMimeTypes = new Set(['image/jpeg', 'image/png', 'image/webp']);
-const logoExtensions = new Set(['.jpeg', '.jpg', '.png', '.gif', '.webp']);
-const logoMimeTypes = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp']);
+const defaultImageExtensions = new Set([
+  '.jpeg',
+  '.jpg',
+  '.png',
+  '.webp',
+  '.avif',
+  '.heic',
+  '.heif',
+  '.jfif'
+]);
+const defaultImageMimeTypes = new Set([
+  'image/jpg',
+  'image/jpeg',
+  'image/pjpeg',
+  'image/png',
+  'image/x-png',
+  'image/webp',
+  'image/avif',
+  'image/heic',
+  'image/heif'
+]);
+const logoExtensions = new Set([
+  '.jpeg',
+  '.jpg',
+  '.png',
+  '.gif',
+  '.webp',
+  '.avif',
+  '.heic',
+  '.heif',
+  '.jfif',
+  '.svg'
+]);
+const logoMimeTypes = new Set([
+  'image/jpg',
+  'image/jpeg',
+  'image/pjpeg',
+  'image/png',
+  'image/x-png',
+  'image/gif',
+  'image/webp',
+  'image/avif',
+  'image/heic',
+  'image/heif',
+  'image/svg',
+  'image/svg+xml'
+]);
 
 const isAllowedImage = (file, { allowGif = false } = {}) => {
   const extension = path.extname(file.originalname || '').toLowerCase();
@@ -35,12 +78,12 @@ const fileFilter = (req, file, cb) => {
   }
 
   if (file.fieldname === 'profileImage') {
-    cb(new ErrorResponse('Profile photos must be JPG, PNG, or WEBP images.', 400));
+    cb(new ErrorResponse('Profile photos must be JPG, PNG, WEBP, AVIF, HEIC, or HEIF images.', 400));
     return;
   }
 
   if (file.fieldname === 'logo') {
-    cb(new ErrorResponse('Logo uploads must be JPG, PNG, GIF, or WEBP images.', 400));
+    cb(new ErrorResponse('Logo uploads must be JPG, PNG, GIF, WEBP, AVIF, HEIC, HEIF, or SVG images.', 400));
     return;
   }
 

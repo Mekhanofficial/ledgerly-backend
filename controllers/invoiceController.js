@@ -500,27 +500,27 @@ exports.getInvoices = asyncHandler(async (req, res, next) => {
   // Execute query with pagination
   const skip = (parsedPage - 1) * parsedLimit;
 
-  const invoices = await Invoice.find(query)
-    .populate('customer', 'name email phone company')
-    .populate('createdBy', 'name email')
-    .sort(sort)
-    .skip(skip)
-    .limit(parsedLimit);
-
-  const total = await Invoice.countDocuments(query);
-
-  // Calculate summary
-  const summary = await Invoice.aggregate([
-    { $match: query },
-    {
-      $group: {
-        _id: null,
-        totalAmount: { $sum: '$total' },
-        totalPaid: { $sum: '$amountPaid' },
-        totalOutstanding: { $sum: '$balance' },
-        count: { $sum: 1 }
+  const [invoices, total, summary] = await Promise.all([
+    Invoice.find(query)
+      .populate('customer', 'name email phone company')
+      .populate('createdBy', 'name email')
+      .sort(sort)
+      .skip(skip)
+      .limit(parsedLimit)
+      .lean(),
+    Invoice.countDocuments(query),
+    Invoice.aggregate([
+      { $match: query },
+      {
+        $group: {
+          _id: null,
+          totalAmount: { $sum: '$total' },
+          totalPaid: { $sum: '$amountPaid' },
+          totalOutstanding: { $sum: '$balance' },
+          count: { $sum: 1 }
+        }
       }
-    }
+    ])
   ]);
 
   res.status(200).json({
@@ -1004,7 +1004,7 @@ exports.deleteInvoice = asyncHandler(async (req, res, next) => {
     }
   }
 
-  await invoice.remove();
+  await invoice.deleteOne();
 
   // Update customer stats
   await Customer.updateCustomerStats(invoice.customer);
@@ -1113,14 +1113,13 @@ exports.sendInvoice = asyncHandler(async (req, res, next) => {
 
   const defaultAttachmentFileName = sanitizeAttachmentFileName(`invoice-${invoice.invoiceNumber}.pdf`);
   const frontendPdfAttachment = resolveFrontendPdfAttachment(req.body, defaultAttachmentFileName);
-  if (!frontendPdfAttachment?.buffer) {
-    return next(new ErrorResponse(
-      'Frontend invoice PDF attachment is required. Please regenerate the invoice PDF and try again.',
-      400
-    ));
+  const attachmentFileName = frontendPdfAttachment?.fileName || defaultAttachmentFileName;
+  const pdfBuffer = frontendPdfAttachment?.buffer || null;
+  if (!pdfBuffer) {
+    console.warn('Sending invoice email without PDF attachment because frontend PDF payload is missing.', {
+      invoiceId: invoice._id?.toString?.() || invoice._id
+    });
   }
-  const attachmentFileName = frontendPdfAttachment.fileName || defaultAttachmentFileName;
-  const pdfBuffer = frontendPdfAttachment.buffer;
 
   // Send email
   try {
@@ -1135,11 +1134,13 @@ exports.sendInvoice = asyncHandler(async (req, res, next) => {
         message: resolvedMessage,
         templateMeta
       }),
-      attachments: [{
-        filename: attachmentFileName,
-        content: pdfBuffer,
-        contentType: 'application/pdf'
-      }]
+      attachments: pdfBuffer
+        ? [{
+          filename: attachmentFileName,
+          content: pdfBuffer,
+          contentType: 'application/pdf'
+        }]
+        : undefined
     });
   } catch (error) {
     return next(new ErrorResponse(toSafeEmailErrorMessage(error), 502));
@@ -1351,8 +1352,22 @@ exports.recordPayment = asyncHandler(async (req, res, next) => {
     );
     const receiptAttachmentFileName = frontendReceiptAttachment?.fileName || defaultReceiptAttachmentFileName;
     
-    if (invoice.customer?.email && frontendReceiptAttachment?.buffer) {
+    if (invoice.customer?.email) {
       try {
+        const attachments = frontendReceiptAttachment?.buffer
+          ? [{
+            filename: receiptAttachmentFileName,
+            content: frontendReceiptAttachment.buffer,
+            contentType: 'application/pdf'
+          }]
+          : undefined;
+
+        if (!attachments) {
+          console.warn('Sending payment receipt email without PDF attachment because frontend receipt PDF payload is missing.', {
+            invoiceId: invoice._id?.toString?.() || invoice._id
+          });
+        }
+
         await sendEmail({
           businessId: req.user.business,
           to: invoice.customer.email,
@@ -1362,19 +1377,11 @@ exports.recordPayment = asyncHandler(async (req, res, next) => {
             context: receiptMailContext,
             templateMeta: receiptTemplateMeta
           }),
-          attachments: [{
-            filename: receiptAttachmentFileName,
-            content: frontendReceiptAttachment.buffer,
-            contentType: 'application/pdf'
-          }]
+          attachments
         });
       } catch (error) {
         console.error('Unable to send receipt email:', toSafeEmailErrorMessage(error));
       }
-    } else if (invoice.customer?.email) {
-      console.warn('Skipping receipt email because frontend receipt PDF attachment is missing', {
-        invoiceId: invoice._id?.toString?.() || invoice._id
-      });
     } else {
       console.warn('Skipping receipt email because customer email is missing', {
         invoiceId: invoice._id?.toString?.() || invoice._id

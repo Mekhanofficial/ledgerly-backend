@@ -52,10 +52,16 @@ const appOrigins = [process.env.FRONTEND_URL, process.env.REACT_APP_URL]
 
 const allowedOrigins = [
   'http://localhost:7000',
+  'http://127.0.0.1:7000',
   'http://localhost:19006',
+  'http://127.0.0.1:19006',
   'http://localhost:8081',
+  'http://127.0.0.1:8081',
   'http://localhost:5173',
+  'http://127.0.0.1:5173',
   'http://localhost:5174',
+  'http://127.0.0.1:5174',
+  'http://127.0.0.1:4173',
   'https://ledgerly-weld.vercel.app',
   ...appOrigins,
   ...envOrigins
@@ -63,7 +69,8 @@ const allowedOrigins = [
 
 const allowedOriginPatterns = [
   /^https:\/\/.*\.vercel\.app$/,
-  /^http:\/\/localhost:\d+$/
+  /^http:\/\/localhost:\d+$/,
+  /^http:\/\/127\.0\.0\.1:\d+$/
 ];
 
 const isOriginAllowed = (origin) => {
