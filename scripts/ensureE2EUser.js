@@ -7,8 +7,6 @@ const { getDefaultPermissions } = require('../utils/rolePermissions');
 
 dotenv.config();
 
-const DEFAULT_E2E_EMAIL = 'qa.admin@ledgerly.com';
-const DEFAULT_E2E_PASSWORD = 'qaadmin123';
 const DEFAULT_E2E_NAME = 'QA Admin';
 const DEFAULT_E2E_BUSINESS_NAME = 'Ledgerly QA';
 const DEFAULT_E2E_BUSINESS_PHONE = '0000000000';
@@ -24,8 +22,8 @@ const getEnv = (names) => {
   return '';
 };
 
-const email = (getEnv(['E2E_USER_EMAIL', 'QA_USER_EMAIL']) || DEFAULT_E2E_EMAIL).toLowerCase();
-const password = getEnv(['E2E_USER_PASSWORD', 'QA_USER_PASSWORD']) || DEFAULT_E2E_PASSWORD;
+const email = getEnv(['E2E_USER_EMAIL', 'QA_USER_EMAIL']).toLowerCase();
+const password = getEnv(['E2E_USER_PASSWORD', 'QA_USER_PASSWORD']);
 const name = getEnv(['E2E_USER_NAME', 'QA_USER_NAME']) || DEFAULT_E2E_NAME;
 const phone = getEnv(['E2E_USER_PHONE', 'QA_USER_PHONE']) || '';
 const businessId = getEnv(['E2E_BUSINESS_ID', 'QA_BUSINESS_ID']);
@@ -177,7 +175,7 @@ const ensureE2EUser = async () => {
 
   await business.save();
 
-  log(`Done. E2E credentials => email: ${email}, password: ${password}`);
+  log(`Done. E2E user ensured for ${email}.`);
   await mongoose.disconnect();
   process.exit(0);
 };
