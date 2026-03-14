@@ -70,6 +70,7 @@ const checkFeatureAccess = (featureName) => async (req, res, next) => {
     whiteLabel: planDef.allowWhiteLabel || Boolean(addOns?.whiteLabelEnabled),
     advancedReporting: planDef.allowAdvancedReporting,
     recurring: planDef.allowRecurring,
+    team: planDef.maxUsers > 1,
     liveChat: planDef.allowLiveChat,
     livechat: planDef.allowLiveChat
   };

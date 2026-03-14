@@ -58,6 +58,7 @@ router.get('/aging-report', authorize('admin', 'accountant', 'super_admin'), get
 router.get(
   '/recurring',
   authorize('admin', 'accountant', 'staff', 'viewer', 'super_admin'),
+  checkFeatureAccess('recurring'),
   getRecurringInvoices
 );
 router.post(
@@ -69,21 +70,25 @@ router.post(
 router.put(
   '/recurring/:id/pause',
   authorize('admin', 'accountant', 'staff'),
+  checkFeatureAccess('recurring'),
   pauseRecurringInvoice
 );
 router.put(
   '/recurring/:id/resume',
   authorize('admin', 'accountant', 'staff'),
+  checkFeatureAccess('recurring'),
   resumeRecurringInvoice
 );
 router.post(
   '/recurring/:id/generate',
   authorize('admin', 'accountant', 'staff'),
+  checkFeatureAccess('recurring'),
   generateRecurringInvoiceNow
 );
 router.put(
   '/recurring/:id/cancel',
   authorize('admin', 'accountant', 'staff'),
+  checkFeatureAccess('recurring'),
   cancelRecurringInvoice
 );
 

@@ -12,7 +12,7 @@ const { checkFeatureAccess } = require('../middleware/subscription');
 router.use(protect);
 
 router.route('/')
-  .get(authorize('admin', 'accountant', 'staff', 'viewer'), getSuppliers)
+  .get(authorize('admin', 'accountant', 'staff', 'viewer'), checkFeatureAccess('inventory'), getSuppliers)
   .post(authorize('admin', 'accountant'), checkFeatureAccess('inventory'), createSupplier);
 
 router.route('/:id')

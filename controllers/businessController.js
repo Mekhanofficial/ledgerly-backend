@@ -4,7 +4,11 @@ const AuditLog = require('../models/AuditLog');
 const ErrorResponse = require('../utils/errorResponse');
 const asyncHandler = require('../utils/asyncHandler');
 const { getPlanDefinition } = require('../utils/planConfig');
-const { resolveBillingOwner, resolveEffectivePlan } = require('../utils/subscriptionService');
+const {
+  resolveBillingOwner,
+  expireSubscriptionIfNeeded,
+  syncBusinessFromUser
+} = require('../utils/subscriptionService');
 const {
   removeStoredAsset,
   uploadCloudinaryImage
@@ -45,6 +49,12 @@ const logAuditEntry = async (req, action, resource, details = {}) => {
 // @route   GET /api/v1/business
 // @access  Private
 exports.getBusinessProfile = asyncHandler(async (req, res, next) => {
+  const billingOwner = await resolveBillingOwner(req.user);
+  if (billingOwner) {
+    await expireSubscriptionIfNeeded(billingOwner);
+    await syncBusinessFromUser(billingOwner);
+  }
+
   const business = await Business.findById(req.user.business)
     .populate('owner', 'name email phone profileImage');
 

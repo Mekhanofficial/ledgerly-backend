@@ -130,6 +130,29 @@ const getGlobalPaystackConfig = () => {
   };
 };
 
+const isObjectIdString = (value) => /^[a-f\d]{24}$/i.test(String(value || '').trim());
+
+const resolvePaystackMetadata = (paystackData = {}) => {
+  const rawMetadata = paystackData?.metadata;
+  if (!rawMetadata) return {};
+  if (typeof rawMetadata === 'object') return rawMetadata;
+  if (typeof rawMetadata === 'string') {
+    try {
+      const parsed = JSON.parse(rawMetadata);
+      return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch {
+      return {};
+    }
+  }
+  return {};
+};
+
+const extractInvoiceIdFromReference = (reference) => {
+  const candidate = String(reference || '').trim();
+  const match = candidate.match(/^inv_([a-f\d]{24})_\d+$/i);
+  return match ? match[1] : '';
+};
+
 const runWithGlobalPaystackFallback = async (paystackConnection, operation) => {
   try {
     const result = await operation(paystackConnection.secretKey);
@@ -172,15 +195,84 @@ const loadPublicInvoice = async (slug) => {
 };
 
 const loadInvoiceByReference = async (reference) => {
-  if (!reference) return null;
-  return Invoice.findOne({
-    $or: [
-      { transactionReference: reference },
-      { paymentReference: reference }
-    ]
-  })
+  const normalizedReference = String(reference || '').trim();
+  const inferredInvoiceId = extractInvoiceIdFromReference(normalizedReference);
+  const lookup = [];
+
+  if (normalizedReference) {
+    lookup.push({ transactionReference: normalizedReference });
+    lookup.push({ paymentReference: normalizedReference });
+  }
+
+  if (isObjectIdString(inferredInvoiceId)) {
+    lookup.push({ _id: inferredInvoiceId });
+  }
+
+  if (lookup.length === 0) return null;
+
+  return Invoice.findOne({ $or: lookup })
     .populate('customer', 'name email')
     .populate('business', 'name email');
+};
+
+const loadInvoiceByHints = async ({ reference, invoiceId, slug } = {}) => {
+  const normalizedReference = String(reference || '').trim();
+  const normalizedInvoiceId = String(invoiceId || '').trim();
+  const normalizedSlug = String(slug || '').trim();
+  const lookup = [];
+
+  if (normalizedReference) {
+    lookup.push({ transactionReference: normalizedReference });
+    lookup.push({ paymentReference: normalizedReference });
+  }
+
+  const inferredInvoiceId = extractInvoiceIdFromReference(normalizedReference);
+  const preferredInvoiceId = isObjectIdString(normalizedInvoiceId)
+    ? normalizedInvoiceId
+    : inferredInvoiceId;
+  if (isObjectIdString(preferredInvoiceId)) {
+    lookup.push({ _id: preferredInvoiceId });
+  }
+
+  if (normalizedSlug) {
+    lookup.push({ publicSlug: normalizedSlug });
+  }
+
+  if (lookup.length === 0) return null;
+
+  return Invoice.findOne({ $or: lookup })
+    .populate('customer', 'name email')
+    .populate('business', 'name email');
+};
+
+const assertVerifiedPaymentMatchesInvoice = (invoice, paystackData, reference) => {
+  const metadata = resolvePaystackMetadata(paystackData);
+  if (!metadata || typeof metadata !== 'object') return;
+
+  const invoiceId = String(invoice?._id || '').trim();
+  const invoiceBusinessId = String(invoice?.business?._id || invoice?.business || '').trim();
+  const invoiceSlug = String(invoice?.publicSlug || '').trim();
+
+  const metadataInvoiceId = String(
+    metadata.invoiceId || metadata.invoice_id || metadata.invoice || ''
+  ).trim();
+  if (metadataInvoiceId && invoiceId && metadataInvoiceId !== invoiceId) {
+    throw new ErrorResponse(`Payment reference ${reference} does not match this invoice`, 400);
+  }
+
+  const metadataBusinessId = String(
+    metadata.businessId || metadata.business_id || metadata.business || ''
+  ).trim();
+  if (metadataBusinessId && invoiceBusinessId && metadataBusinessId !== invoiceBusinessId) {
+    throw new ErrorResponse(`Payment reference ${reference} does not match this business`, 400);
+  }
+
+  const metadataSlug = String(
+    metadata.publicSlug || metadata.slug || metadata.public_slug || ''
+  ).trim();
+  if (metadataSlug && invoiceSlug && metadataSlug !== invoiceSlug) {
+    throw new ErrorResponse(`Payment reference ${reference} does not match this invoice link`, 400);
+  }
 };
 
 const loadBusinessWithSecret = async (businessId) => {
@@ -476,6 +568,8 @@ const applyVerifiedInvoicePayment = async ({
     throw new ErrorResponse('Payment not successful', 400);
   }
 
+  assertVerifiedPaymentMatchesInvoice(invoice, paystackData, reference);
+
   const existingPayment = await validateVerifiedAmountAndCurrency(invoice, paystackData, reference);
 
   // Idempotent path: invoice already updated and payment record exists.
@@ -596,7 +690,12 @@ const initializePublicInvoicePayment = async ({ req, invoice }) => {
 
   const currency = String(invoice.currency || business.currency || 'NGN').trim().toUpperCase();
   const reference = `inv_${invoice._id}_${Date.now()}`;
-  const callbackUrl = `${getBackendBaseUrl(req)}/api/v1/payments/verify?source=invoice`;
+  const callbackQuery = new URLSearchParams({
+    source: 'invoice',
+    slug: String(invoice.publicSlug || ''),
+    invoiceId: String(invoice._id || '')
+  });
+  const callbackUrl = `${getBackendBaseUrl(req)}/api/v1/payments/verify?${callbackQuery.toString()}`;
 
   const payload = {
     email: customerEmail,
@@ -885,6 +984,8 @@ const respondWithInvoicePaymentResult = (req, res, invoice, isSuccess, payload =
 // @access  Public
 exports.verifyPublicInvoicePayment = asyncHandler(async (req, res, next) => {
   const reference = String(req.query.reference || req.query.trxref || '').trim();
+  const invoiceIdHint = String(req.query.invoiceId || req.query.invoice || '').trim();
+  const slugHint = String(req.query.slug || req.query.publicSlug || '').trim();
 
   if (!reference) {
     const reason = 'Reference is required';
@@ -895,7 +996,11 @@ exports.verifyPublicInvoicePayment = asyncHandler(async (req, res, next) => {
     return next(new ErrorResponse(reason, 400));
   }
 
-  const invoice = await loadInvoiceByReference(reference);
+  const invoice = await loadInvoiceByHints({
+    reference,
+    invoiceId: invoiceIdHint,
+    slug: slugHint
+  });
   if (!invoice) {
     const reason = 'Invoice not found';
     const fallbackBaseUrl = getFrontendBaseUrl(req);
@@ -963,7 +1068,7 @@ exports.sendPublicInvoiceReceiptEmail = asyncHandler(async (req, res, next) => {
     return next(new ErrorResponse('Reference is required', 400));
   }
 
-  const invoice = await loadInvoiceByReference(reference);
+  const invoice = await loadInvoiceByHints({ reference });
   if (!invoice) {
     return next(new ErrorResponse('Invoice not found', 404));
   }
@@ -1004,13 +1109,18 @@ exports.paystackInvoiceWebhook = asyncHandler(async (req, res) => {
   const event = req.body || {};
   const eventType = event?.event;
   const payload = event?.data || {};
+  const metadata = resolvePaystackMetadata(payload);
   const reference = String(payload?.reference || '').trim();
 
   if (!reference) {
     return res.status(200).json({ success: true, message: 'No reference in webhook payload' });
   }
 
-  const invoice = await loadInvoiceByReference(reference);
+  const invoice = await loadInvoiceByHints({
+    reference,
+    invoiceId: metadata?.invoiceId || metadata?.invoice_id || metadata?.invoice,
+    slug: metadata?.publicSlug || metadata?.public_slug || metadata?.slug
+  });
   if (!invoice) {
     return res.status(200).json({ success: true, message: 'Invoice not found for reference' });
   }

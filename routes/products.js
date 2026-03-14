@@ -20,7 +20,7 @@ const uploadProductImage = uploadCloudinaryImage.fields([
 router.use(protect);
 
 router.route('/')
-  .get(authorize('admin', 'accountant', 'staff', 'viewer'), getProducts)
+  .get(authorize('admin', 'accountant', 'staff', 'viewer'), checkFeatureAccess('inventory'), getProducts)
   .post(
     authorize('admin', 'accountant'),
     checkFeatureAccess('inventory'),
@@ -31,7 +31,7 @@ router.route('/')
 router.get('/low-stock', authorize('admin', 'accountant'), checkFeatureAccess('inventory'), getLowStockProducts);
 
 router.route('/:id')
-  .get(authorize('admin', 'accountant', 'staff', 'viewer'), getProduct)
+  .get(authorize('admin', 'accountant', 'staff', 'viewer'), checkFeatureAccess('inventory'), getProduct)
   .put(
     authorize('admin', 'accountant'),
     checkFeatureAccess('inventory'),

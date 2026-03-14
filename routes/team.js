@@ -9,11 +9,12 @@ const {
   removeTeamMember
 } = require('../controllers/teamController');
 const { protect, authorize } = require('../middleware/auth');
-const { checkTeamLimit } = require('../middleware/subscription');
+const { checkFeatureAccess, checkTeamLimit } = require('../middleware/subscription');
 
 router.post('/accept/:token', acceptTeamInvite);
 
 router.use(protect);
+router.use(checkFeatureAccess('team'));
 
 router.get('/', authorize('super_admin', 'admin'), getTeamMembers);
 router.post('/invite', authorize('super_admin', 'admin'), checkTeamLimit, inviteTeamMember);

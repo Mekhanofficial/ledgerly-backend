@@ -12,7 +12,7 @@ const { checkFeatureAccess } = require('../middleware/subscription');
 router.use(protect);
 
 router.route('/')
-  .get(authorize('admin', 'accountant', 'staff', 'viewer'), getCategories)
+  .get(authorize('admin', 'accountant', 'staff', 'viewer'), checkFeatureAccess('inventory'), getCategories)
   .post(authorize('admin', 'accountant'), checkFeatureAccess('inventory'), createCategory);
 
 router.route('/:id')
