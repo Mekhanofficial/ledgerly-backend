@@ -1,5 +1,23 @@
 const mongoose = require('mongoose');
 
+const toTitleCase = (value) => String(value || '')
+  .trim()
+  .replace(/\s+/g, ' ')
+  .toLowerCase()
+  .replace(/(^|[\s'-])[a-z]/g, (chunk) => chunk.toUpperCase());
+
+const normalizeCustomerUpdatePayload = (payload = {}) => {
+  if (!payload || typeof payload !== 'object') {
+    return payload;
+  }
+
+  if (typeof payload.name === 'string') {
+    payload.name = toTitleCase(payload.name);
+  }
+
+  return payload;
+};
+
 const CustomerSchema = new mongoose.Schema({
   business: {
     type: mongoose.Schema.Types.ObjectId,
@@ -110,6 +128,10 @@ const CustomerSchema = new mongoose.Schema({
 
 // Generate customer ID before save
 CustomerSchema.pre('save', async function(next) {
+  if (this.isModified('name')) {
+    this.name = toTitleCase(this.name);
+  }
+
   if (!this.customerId) {
     const business = await mongoose.model('Business').findById(this.business);
     const lastCustomer = await this.constructor.findOne({
@@ -124,6 +146,14 @@ CustomerSchema.pre('save', async function(next) {
     
     this.customerId = `CUST-${String(lastNumber + 1).padStart(5, '0')}`;
   }
+  next();
+});
+
+CustomerSchema.pre('findOneAndUpdate', function(next) {
+  const update = this.getUpdate() || {};
+  normalizeCustomerUpdatePayload(update);
+  normalizeCustomerUpdatePayload(update.$set);
+  this.setUpdate(update);
   next();
 });
 

@@ -767,9 +767,13 @@ exports.createInvoice = asyncHandler(async (req, res, next) => {
   // Update customer stats
   await Customer.updateCustomerStats(customer._id);
 
+  const populatedInvoice = await Invoice.findById(invoice._id)
+    .populate('customer', 'name email phone company')
+    .populate('createdBy', 'name email');
+
   res.status(201).json({
     success: true,
-    data: invoice
+    data: populatedInvoice || invoice
   });
 });
 
@@ -946,9 +950,14 @@ exports.updateInvoice = asyncHandler(async (req, res, next) => {
   // Update customer stats
   await Customer.updateCustomerStats(invoice.customer);
 
+  const populatedInvoice = await Invoice.findById(invoice._id)
+    .populate('customer', 'name email phone company')
+    .populate('createdBy', 'name email')
+    .populate('updatedBy', 'name email');
+
   res.status(200).json({
     success: true,
-    data: invoice
+    data: populatedInvoice || invoice
   });
 });
 
