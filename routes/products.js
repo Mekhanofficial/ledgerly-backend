@@ -5,10 +5,11 @@ const {
   getProduct,
   createProduct,
   updateProduct,
+  deleteProduct,
   adjustStock,
   getLowStockProducts
 } = require('../controllers/productController');
-const { protect, authorize } = require('../middleware/auth');
+const { protect, authorizePermission } = require('../middleware/auth');
 const { checkFeatureAccess } = require('../middleware/subscription');
 const uploadCloudinaryImage = require('../middleware/uploadImage');
 
@@ -20,25 +21,26 @@ const uploadProductImage = uploadCloudinaryImage.fields([
 router.use(protect);
 
 router.route('/')
-  .get(authorize('admin', 'accountant', 'staff', 'viewer'), checkFeatureAccess('inventory'), getProducts)
+  .get(authorizePermission('products', 'read'), checkFeatureAccess('inventory'), getProducts)
   .post(
-    authorize('admin', 'accountant'),
+    authorizePermission('products', 'create'),
     checkFeatureAccess('inventory'),
     uploadProductImage,
     createProduct
   );
 
-router.get('/low-stock', authorize('admin', 'accountant'), checkFeatureAccess('inventory'), getLowStockProducts);
+router.get('/low-stock', authorizePermission('products', 'read'), checkFeatureAccess('inventory'), getLowStockProducts);
 
 router.route('/:id')
-  .get(authorize('admin', 'accountant', 'staff', 'viewer'), checkFeatureAccess('inventory'), getProduct)
+  .get(authorizePermission('products', 'read'), checkFeatureAccess('inventory'), getProduct)
   .put(
-    authorize('admin', 'accountant'),
+    authorizePermission('products', 'update'),
     checkFeatureAccess('inventory'),
     uploadProductImage,
     updateProduct
-  );
+  )
+  .delete(authorizePermission('products', 'delete'), checkFeatureAccess('inventory'), deleteProduct);
 
-router.post('/:id/adjust-stock', authorize('admin', 'accountant'), checkFeatureAccess('inventory'), adjustStock);
+router.post('/:id/adjust-stock', authorizePermission('products', 'update'), checkFeatureAccess('inventory'), adjustStock);
 
 module.exports = router;

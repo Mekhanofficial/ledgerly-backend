@@ -6,17 +6,17 @@ const {
   updateSupplier,
   deleteSupplier
 } = require('../controllers/supplierController');
-const { protect, authorize } = require('../middleware/auth');
+const { protect, authorizePermission } = require('../middleware/auth');
 const { checkFeatureAccess } = require('../middleware/subscription');
 
 router.use(protect);
 
 router.route('/')
-  .get(authorize('admin', 'accountant', 'staff', 'viewer'), checkFeatureAccess('inventory'), getSuppliers)
-  .post(authorize('admin', 'accountant'), checkFeatureAccess('inventory'), createSupplier);
+  .get(authorizePermission('products', 'read'), checkFeatureAccess('inventory'), getSuppliers)
+  .post(authorizePermission('products', 'create'), checkFeatureAccess('inventory'), createSupplier);
 
 router.route('/:id')
-  .put(authorize('admin', 'accountant'), checkFeatureAccess('inventory'), updateSupplier)
-  .delete(authorize('admin', 'accountant'), checkFeatureAccess('inventory'), deleteSupplier);
+  .put(authorizePermission('products', 'update'), checkFeatureAccess('inventory'), updateSupplier)
+  .delete(authorizePermission('products', 'delete'), checkFeatureAccess('inventory'), deleteSupplier);
 
 module.exports = router;

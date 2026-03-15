@@ -20,7 +20,10 @@ const NO_STORE_PATTERNS = [
   // Dynamic inventory data should always be fresh.
   /^\/categories(\/|$)/,
   /^\/products(\/|$)/,
-  /^\/suppliers(\/|$)/
+  /^\/suppliers(\/|$)/,
+  // Private invoice datasets change frequently after create/send/payment actions.
+  // Keep the list/detail endpoints uncached to avoid stale UI after mutations.
+  /^\/invoices(?:\/(?!public(?:\/|$)).*)?$/
 ];
 
 const PUBLIC_PATTERNS = [

@@ -8,7 +8,10 @@ const receiptRoutes = require('../../routes/receipts');
 const productRoutes = require('../../routes/products');
 const categoryRoutes = require('../../routes/categories');
 const supplierRoutes = require('../../routes/suppliers');
+const stockAdjustmentRoutes = require('../../routes/stockAdjustments');
 const teamRoutes = require('../../routes/team');
+const reportRoutes = require('../../routes/reports');
+const settingsRoutes = require('../../routes/settings');
 const errorHandler = require('../../middleware/error');
 
 const createTestApp = () => {
@@ -25,7 +28,10 @@ const createTestApp = () => {
   app.use('/api/v1/products', productRoutes);
   app.use('/api/v1/categories', categoryRoutes);
   app.use('/api/v1/suppliers', supplierRoutes);
+  app.use('/api/v1/inventory/stock-adjustments', stockAdjustmentRoutes);
   app.use('/api/v1/team', teamRoutes);
+  app.use('/api/v1/reports', reportRoutes);
+  app.use('/api/v1/settings', settingsRoutes);
 
   app.get('/health', (req, res) => {
     res.status(200).json({

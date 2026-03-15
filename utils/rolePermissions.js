@@ -15,7 +15,7 @@ const ROLE_PERMISSIONS = {
     customers: { create: true, read: true, update: true, delete: true },
     products: { create: true, read: true, update: true, delete: true },
     reports: { view: true, export: true },
-    settings: { view: true, update: false }
+    settings: { view: true, update: true }
   },
   accountant: {
     invoices: { create: true, read: true, update: true, delete: false },
@@ -53,10 +53,55 @@ const normalizeRole = (role) => {
   return ROLE_ALIASES[lower] || lower;
 };
 
+const deepClone = (value) => JSON.parse(JSON.stringify(value));
+
+const mergePermissions = (base = {}, override = {}) => {
+  const result = deepClone(base);
+  Object.entries(override || {}).forEach(([key, value]) => {
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      result[key] = mergePermissions(result[key] || {}, value);
+      return;
+    }
+    result[key] = value;
+  });
+  return result;
+};
+
 const getDefaultPermissions = (role) => {
   const normalized = normalizeRole(role);
   const base = ROLE_PERMISSIONS[normalized] || ROLE_PERMISSIONS.staff;
-  return JSON.parse(JSON.stringify(base));
+  return deepClone(base);
+};
+
+const getResolvedPermissions = (subject) => {
+  if (!subject) {
+    return getDefaultPermissions('staff');
+  }
+
+  if (typeof subject === 'string') {
+    return getDefaultPermissions(subject);
+  }
+
+  return mergePermissions(
+    getDefaultPermissions(subject.effectiveRole || subject.role),
+    subject.permissions || {}
+  );
+};
+
+const hasPermission = (subject, domain, action) => {
+  const effectiveRole = normalizeRole(subject?.effectiveRole || subject?.role || subject);
+  if (isSuperAdmin(effectiveRole)) {
+    return true;
+  }
+
+  // Preserve admin settings ownership behavior even for older accounts created before
+  // settings.update became part of the admin default template.
+  if (effectiveRole === 'admin' && domain === 'settings') {
+    return true;
+  }
+
+  const permissions = getResolvedPermissions(subject);
+  return Boolean(permissions?.[domain]?.[action]);
 };
 
 const isRoleSupported = (role) => {
@@ -79,6 +124,8 @@ module.exports = {
   ROLE_PERMISSIONS,
   normalizeRole,
   getDefaultPermissions,
+  getResolvedPermissions,
+  hasPermission,
   isRoleSupported,
   isSuperAdmin,
   isAdmin,

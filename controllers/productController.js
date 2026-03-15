@@ -479,6 +479,60 @@ exports.updateProduct = asyncHandler(async (req, res, next) => {
   }
 });
 
+// @desc    Delete product
+// @route   DELETE /api/v1/products/:id
+// @access  Private
+exports.deleteProduct = asyncHandler(async (req, res, next) => {
+  const product = await Product.findOne({
+    _id: req.params.id,
+    business: req.user.business
+  });
+
+  if (!product) {
+    return next(new ErrorResponse(`Product not found with id ${req.params.id}`, 404));
+  }
+
+  const imageAssets = Array.isArray(product.images)
+    ? product.images
+      .map((image) => ({
+        url: image?.url,
+        publicId: image?.publicId || ''
+      }))
+      .filter((image) => image.url)
+    : [];
+
+  if (product.category) {
+    await Category.findByIdAndUpdate(product.category, {
+      $inc: { productCount: -1 },
+      $set: { updatedBy: req.user.id }
+    });
+  }
+
+  if (product.supplier) {
+    await Supplier.findByIdAndUpdate(product.supplier, {
+      $pull: { products: product._id },
+      $set: { updatedBy: req.user.id }
+    });
+  }
+
+  await Promise.all([
+    InventoryTransaction.deleteMany({
+      business: req.user.business,
+      product: product._id
+    }),
+    product.deleteOne()
+  ]);
+
+  if (imageAssets.length > 0) {
+    await Promise.all(imageAssets.map((image) => removeStoredAsset(image)));
+  }
+
+  res.status(200).json({
+    success: true,
+    data: {}
+  });
+});
+
 // @desc    Adjust product stock
 // @route   POST /api/v1/products/:id/adjust-stock
 // @access  Private

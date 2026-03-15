@@ -36,6 +36,30 @@ const resolveInvoiceCurrency = (business, requestedCurrency) => {
 
 const getEffectiveRole = (req) => req.user?.effectiveRole || normalizeRole(req.user?.role);
 
+const buildInvoiceListSort = (sortValue) => {
+  const normalized = String(sortValue || '-createdAt').trim();
+  if (!normalized) {
+    return { createdAt: -1, _id: -1 };
+  }
+
+  const direction = normalized.startsWith('-') ? -1 : 1;
+  const field = normalized.replace(/^-/, '');
+
+  if (field === 'date') {
+    return {
+      date: direction,
+      createdAt: direction,
+      _id: direction
+    };
+  }
+
+  return {
+    [field]: direction,
+    createdAt: -1,
+    _id: -1
+  };
+};
+
 const hasValue = (value) => value !== undefined && value !== null;
 
 const escapeHtml = (value) =>
@@ -459,7 +483,7 @@ exports.getInvoices = asyncHandler(async (req, res, next) => {
     search,
     page = 1,
     limit = 20,
-    sort = '-date'
+    sort = '-createdAt'
   } = req.query;
   const parsedPage = Math.max(Number.parseInt(page, 10) || 1, 1);
   const parsedLimit = Math.min(Math.max(Number.parseInt(limit, 10) || 20, 1), 100);
@@ -502,6 +526,7 @@ exports.getInvoices = asyncHandler(async (req, res, next) => {
 
   // Execute query with pagination
   const skip = (parsedPage - 1) * parsedLimit;
+  const sortSpec = buildInvoiceListSort(sort);
   const defaultSummary = {
     totalAmount: 0,
     totalPaid: 0,
@@ -527,7 +552,7 @@ exports.getInvoices = asyncHandler(async (req, res, next) => {
     Invoice.find(query)
       .populate('customer', 'name email phone company')
       .populate('createdBy', 'name email')
-      .sort(sort)
+      .sort(sortSpec)
       .skip(skip)
       .limit(parsedLimit)
       .lean(),
@@ -1177,10 +1202,14 @@ exports.sendInvoice = asyncHandler(async (req, res, next) => {
   invoice.paymentLinkSentAt = new Date();
   await invoice.save();
 
+  const populatedInvoice = await Invoice.findById(invoice._id)
+    .populate('customer', 'name email phone company')
+    .populate('createdBy', 'name email');
+
   res.status(200).json({
     success: true,
     message: 'Invoice sent successfully',
-    data: invoice
+    data: populatedInvoice || invoice
   });
 });
 

@@ -1,6 +1,6 @@
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
-const { normalizeRole, isSuperAdmin } = require('../utils/rolePermissions');
+const { normalizeRole, isSuperAdmin, getResolvedPermissions, hasPermission } = require('../utils/rolePermissions');
 
 // Protect routes
 exports.protect = async (req, res, next) => {
@@ -47,6 +47,7 @@ exports.protect = async (req, res, next) => {
     
     req.user = user;
     req.user.effectiveRole = normalizeRole(user.role);
+    req.user.resolvedPermissions = getResolvedPermissions(user);
     next();
   } catch (err) {
     return res.status(401).json({
@@ -72,6 +73,19 @@ exports.authorize = (...roles) => {
       });
     }
     next();
+  };
+};
+
+exports.authorizePermission = (domain, action) => {
+  return (req, res, next) => {
+    if (hasPermission(req.user, domain, action)) {
+      return next();
+    }
+
+    return res.status(403).json({
+      success: false,
+      error: `Missing permission: ${domain}.${action}`
+    });
   };
 };
 

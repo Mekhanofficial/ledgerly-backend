@@ -10,21 +10,21 @@ const {
   sendCustomerStatement,
   importCustomers
 } = require('../controllers/customerController');
-const { protect, authorize } = require('../middleware/auth');
+const { protect, authorizePermission } = require('../middleware/auth');
 
 router.use(protect);
 
 router.route('/')
-  .get(authorize('admin', 'accountant', 'staff', 'viewer'), getCustomers)
-  .post(authorize('admin', 'staff'), createCustomer);
+  .get(authorizePermission('customers', 'read'), getCustomers)
+  .post(authorizePermission('customers', 'create'), createCustomer);
 
 router.route('/:id')
-  .get(authorize('admin', 'accountant', 'staff', 'viewer'), getCustomer)
-  .put(authorize('admin', 'staff'), updateCustomer)
-  .delete(authorize('admin'), deleteCustomer);
+  .get(authorizePermission('customers', 'read'), getCustomer)
+  .put(authorizePermission('customers', 'update'), updateCustomer)
+  .delete(authorizePermission('customers', 'delete'), deleteCustomer);
 
-router.get('/:id/history', authorize('admin', 'accountant', 'staff'), getCustomerHistory);
-router.post('/:id/send-statement', authorize('admin', 'accountant', 'staff'), sendCustomerStatement);
-router.post('/import', authorize('admin'), importCustomers);
+router.get('/:id/history', authorizePermission('customers', 'read'), getCustomerHistory);
+router.post('/:id/send-statement', authorizePermission('customers', 'read'), sendCustomerStatement);
+router.post('/import', authorizePermission('customers', 'create'), importCustomers);
 
 module.exports = router;

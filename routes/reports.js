@@ -13,24 +13,24 @@ const {
   deleteReport,
   recordDownload
 } = require('../controllers/generatedReportController');
-const { protect, authorize } = require('../middleware/auth');
+const { protect, authorizePermission } = require('../middleware/auth');
 const { checkFeatureAccess } = require('../middleware/subscription');
 
 router.use(protect);
 
-router.get('/dashboard', authorize('admin', 'accountant'), getDashboard);
-router.get('/sales', authorize('admin', 'accountant'), getSalesReport);
-router.get('/inventory', authorize('admin', 'accountant'), checkFeatureAccess('inventory'), getInventoryReport);
-router.get('/profit-loss', authorize('admin', 'accountant'), checkFeatureAccess('advancedReporting'), getProfitLossReport);
+router.get('/dashboard', authorizePermission('reports', 'view'), getDashboard);
+router.get('/sales', authorizePermission('reports', 'view'), getSalesReport);
+router.get('/inventory', authorizePermission('reports', 'view'), checkFeatureAccess('inventory'), getInventoryReport);
+router.get('/profit-loss', authorizePermission('reports', 'view'), checkFeatureAccess('advancedReporting'), getProfitLossReport);
 
 router.route('/history')
-  .get(authorize('admin', 'accountant'), listReports)
-  .post(authorize('admin', 'accountant'), createReport);
+  .get(authorizePermission('reports', 'view'), listReports)
+  .post(authorizePermission('reports', 'view'), createReport);
 
 router.route('/history/:id')
-  .patch(authorize('admin', 'accountant'), updateReport)
-  .delete(authorize('admin', 'accountant'), deleteReport);
+  .patch(authorizePermission('reports', 'view'), updateReport)
+  .delete(authorizePermission('reports', 'view'), deleteReport);
 
-router.post('/history/:id/download', authorize('admin', 'accountant'), recordDownload);
+router.post('/history/:id/download', authorizePermission('reports', 'export'), recordDownload);
 
 module.exports = router;

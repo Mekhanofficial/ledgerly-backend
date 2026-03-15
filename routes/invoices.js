@@ -25,7 +25,7 @@ const {
   initializePublicInvoicePaystackPayment,
   redirectPublicInvoicePaymentPortal
 } = require('../controllers/invoicePaymentController');
-const { protect, authorize } = require('../middleware/auth');
+const { protect, authorize, authorizePermission } = require('../middleware/auth');
 const {
   checkSubscription,
   checkInvoiceLimit,
@@ -42,81 +42,81 @@ router.use(protect);
 
 // Invoice routes
 router.route('/')
-  .get(authorize('admin', 'accountant', 'staff', 'viewer', 'client', 'super_admin'), getInvoices)
+  .get(authorizePermission('invoices', 'read'), getInvoices)
   .post(
-    authorize('admin', 'accountant', 'staff'),
+    authorizePermission('invoices', 'create'),
     checkSubscription(),
     checkInvoiceLimit,
     createInvoice
   );
 
 // Reports
-router.get('/outstanding', authorize('admin', 'accountant', 'super_admin'), getOutstanding);
-router.get('/aging-report', authorize('admin', 'accountant', 'super_admin'), getAgingReport);
+router.get('/outstanding', authorizePermission('reports', 'view'), getOutstanding);
+router.get('/aging-report', authorizePermission('reports', 'view'), getAgingReport);
 
 // Recurring invoices
 router.get(
   '/recurring',
-  authorize('admin', 'accountant', 'staff', 'viewer', 'super_admin'),
+  authorizePermission('invoices', 'read'),
   checkFeatureAccess('recurring'),
   getRecurringInvoices
 );
 router.post(
   '/:id/recurring',
-  authorize('admin', 'accountant', 'staff'),
+  authorizePermission('invoices', 'update'),
   checkFeatureAccess('recurring'),
   setInvoiceRecurring
 );
 router.put(
   '/recurring/:id/pause',
-  authorize('admin', 'accountant', 'staff'),
+  authorizePermission('invoices', 'update'),
   checkFeatureAccess('recurring'),
   pauseRecurringInvoice
 );
 router.put(
   '/recurring/:id/resume',
-  authorize('admin', 'accountant', 'staff'),
+  authorizePermission('invoices', 'update'),
   checkFeatureAccess('recurring'),
   resumeRecurringInvoice
 );
 router.post(
   '/recurring/:id/generate',
-  authorize('admin', 'accountant', 'staff'),
+  authorizePermission('invoices', 'create'),
   checkFeatureAccess('recurring'),
   generateRecurringInvoiceNow
 );
 router.put(
   '/recurring/:id/cancel',
-  authorize('admin', 'accountant', 'staff'),
+  authorizePermission('invoices', 'update'),
   checkFeatureAccess('recurring'),
   cancelRecurringInvoice
 );
 
 router.post(
   '/duplicate/:id',
-  authorize('admin', 'accountant', 'staff'),
+  authorizePermission('invoices', 'create'),
   checkSubscription(),
   checkInvoiceLimit,
   duplicateInvoice
 );
 
 // Invoice actions
-router.post('/:id/send', authorize('admin', 'accountant', 'staff'), checkSubscription(), sendInvoice);
-router.get('/:id/pdf', authorize('admin', 'accountant', 'staff', 'viewer', 'client', 'super_admin'), checkSubscription(), getInvoicePDF);
+router.post('/:id/send', authorizePermission('invoices', 'update'), checkSubscription(), sendInvoice);
+router.get('/:id/pdf', authorizePermission('invoices', 'read'), checkSubscription(), getInvoicePDF);
 router.post('/:id/payment', authorize('admin', 'accountant', 'client'), recordPayment);
-router.post('/:id/reminder', authorize('admin', 'accountant'), sendReminder);
+router.post('/:id/reminder', authorizePermission('invoices', 'update'), sendReminder);
 
 router.route('/:id')
-  .get(authorize('admin', 'accountant', 'staff', 'viewer', 'client', 'super_admin'), getInvoice)
-  .put(authorize('admin', 'accountant', 'staff'), updateInvoice)
-  .delete(authorize('super_admin'), deleteInvoice);
+  .get(authorizePermission('invoices', 'read'), getInvoice)
+  .put(authorizePermission('invoices', 'update'), updateInvoice)
+  .delete(authorizePermission('invoices', 'delete'), deleteInvoice);
 
 // Bulk actions
-router.post('/bulk/send', authorize('admin', 'accountant'), async (req, res) => {
+router.post('/bulk/send', authorizePermission('invoices', 'update'), async (req, res) => {
   // Send multiple invoices
 });
 
-router.post('/bulk/reminders', authorize('admin', 'accountant'), async (req, res) => {
+router.post('/bulk/reminders', authorizePermission('invoices', 'update'), async (req, res) => {
   // Send reminders for multiple invoices
 });
 
