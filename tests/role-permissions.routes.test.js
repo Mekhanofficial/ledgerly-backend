@@ -1,4 +1,5 @@
 const request = require('supertest');
+const User = require('../models/User');
 
 const createTestApp = require('./utils/createTestApp');
 const {
@@ -106,5 +107,71 @@ describe('Role Permission Route Enforcement', () => {
     expect(reportsResponse.statusCode).toBe(403);
     expect(settingsReadResponse.statusCode).toBe(200);
     expect(settingsWriteResponse.statusCode).toBe(403);
+  });
+
+  it('applies updated role templates to existing users immediately', async () => {
+    const { business, token: adminToken } = await createUserWithBusiness(
+      buildProfessionalAccount('admin', getDefaultPermissions('admin'))
+    );
+
+    const suffix = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const accountantPermissions = getDefaultPermissions('accountant');
+    accountantPermissions.customers.create = true;
+    accountantPermissions.customers.update = true;
+
+    const accountant = await User.create({
+      name: `Accountant ${suffix}`,
+      email: `accountant_${suffix}@example.com`,
+      password: 'password123',
+      phone: '08022222222',
+      business: business._id,
+      role: 'accountant',
+      permissions: accountantPermissions,
+      emailVerified: true,
+      isActive: true
+    });
+
+    const accountantToken = accountant.getSignedJwtToken();
+
+    const initialCreateResponse = await request(app)
+      .post('/api/v1/customers')
+      .set(authHeader(accountantToken))
+      .send({
+        name: `Customer Initial ${suffix}`,
+        email: `customer_initial_${suffix}@example.com`
+      });
+
+    expect(initialCreateResponse.statusCode).toBe(201);
+
+    const updateTemplateResponse = await request(app)
+      .put('/api/v1/settings')
+      .set(authHeader(adminToken))
+      .send({
+        rolePermissions: {
+          accountant: {
+            customers: {
+              create: false,
+              update: false
+            }
+          }
+        }
+      });
+
+    expect(updateTemplateResponse.statusCode).toBe(200);
+
+    const blockedCreateResponse = await request(app)
+      .post('/api/v1/customers')
+      .set(authHeader(accountantToken))
+      .send({
+        name: `Customer Blocked ${suffix}`,
+        email: `customer_blocked_${suffix}@example.com`
+      });
+
+    expect(blockedCreateResponse.statusCode).toBe(403);
+    expect(blockedCreateResponse.body.error).toBe('Missing permission: customers.create');
+
+    const reloadedAccountant = await User.findById(accountant._id).select('permissions');
+    expect(reloadedAccountant.permissions.customers.create).toBe(false);
+    expect(reloadedAccountant.permissions.customers.update).toBe(false);
   });
 });

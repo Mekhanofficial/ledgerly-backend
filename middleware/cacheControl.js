@@ -3,34 +3,17 @@ const parsePositiveInt = (value, fallback) => {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 };
 
-const PRIVATE_CACHE_MAX_AGE = parsePositiveInt(
-  process.env.API_PRIVATE_CACHE_MAX_AGE_SECONDS,
-  300
-);
-
 const PUBLIC_CACHE_MAX_AGE = parsePositiveInt(
   process.env.API_PUBLIC_CACHE_MAX_AGE_SECONDS,
   3600
 );
 
-const NO_STORE_PATTERNS = [
-  /^\/auth(\/|$)/,
-  /^\/webhooks(\/|$)/,
-  /^\/payments\/webhook(\/|$)/,
-  // Dynamic inventory data should always be fresh.
-  /^\/categories(\/|$)/,
-  /^\/products(\/|$)/,
-  /^\/suppliers(\/|$)/,
-  // Private invoice datasets change frequently after create/send/payment actions.
-  // Keep the list/detail endpoints uncached to avoid stale UI after mutations.
-  /^\/invoices(?:\/(?!public(?:\/|$)).*)?$/
-];
-
+// Keep an explicit allowlist for endpoints that are safe to cache publicly.
 const PUBLIC_PATTERNS = [
   /^\/invoices\/public(\/|$)/,
-  /^\/payments\/verify(\/|$)/,
-  /^\/payments\/callback(\/|$)/,
-  /^\/livechat\/eligibility(\/|$)/
+  /^\/payments\/verify\/?$/,
+  /^\/payments\/callback\/?$/,
+  /^\/livechat\/eligibility\/?$/
 ];
 
 const apiCacheControl = (req, res, next) => {
@@ -39,11 +22,6 @@ const apiCacheControl = (req, res, next) => {
   }
 
   const requestPath = String(req.path || '/');
-  if (NO_STORE_PATTERNS.some((pattern) => pattern.test(requestPath))) {
-    res.setHeader('Cache-Control', 'no-store');
-    return next();
-  }
-
   if (PUBLIC_PATTERNS.some((pattern) => pattern.test(requestPath))) {
     res.setHeader(
       'Cache-Control',
@@ -52,10 +30,8 @@ const apiCacheControl = (req, res, next) => {
     return next();
   }
 
-  res.setHeader(
-    'Cache-Control',
-    `private, max-age=${PRIVATE_CACHE_MAX_AGE}, must-revalidate`
-  );
+  // Default all private API reads to no-store so post-mutation UIs never see stale lists.
+  res.setHeader('Cache-Control', 'no-store');
   return next();
 };
 

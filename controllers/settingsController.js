@@ -13,6 +13,7 @@ const TaxSettings = require('../models/TaxSettings');
 const User = require('../models/User');
 const ErrorResponse = require('../utils/errorResponse');
 const asyncHandler = require('../utils/asyncHandler');
+const { getDefaultPermissions, normalizeRole } = require('../utils/rolePermissions');
 
 const logAuditEntry = async (req, action, resource, details = {}) => {
   await AuditLog.create({
@@ -29,6 +30,89 @@ const mergeSection = (target, source) => {
   Object.keys(source).forEach(key => {
     target[key] = source[key];
   });
+};
+
+const deepClone = (value) => JSON.parse(JSON.stringify(value || {}));
+
+const mergeDeep = (base = {}, override = {}) => {
+  const result = deepClone(base);
+  Object.entries(override || {}).forEach(([key, value]) => {
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      result[key] = mergeDeep(result[key] || {}, value);
+      return;
+    }
+    result[key] = value;
+  });
+  return result;
+};
+
+const mergeRolePermissionTemplates = (existingTemplates = {}, incomingTemplates = {}) => {
+  const merged = deepClone(existingTemplates);
+  Object.entries(incomingTemplates || {}).forEach(([role, template]) => {
+    const normalizedRole = normalizeRole(role);
+    if (!normalizedRole || normalizedRole === 'super_admin') {
+      return;
+    }
+
+    merged[normalizedRole] = mergeDeep(merged[normalizedRole] || {}, template || {});
+  });
+  return merged;
+};
+
+const getUserRoleVariants = (normalizedRole) => (
+  normalizedRole === 'staff' ? ['staff', 'sales'] : [normalizedRole]
+);
+
+const syncRoleTemplatesToExistingUsers = async (
+  businessId,
+  settingsRolePermissions = {},
+  updatedRolePermissions = {}
+) => {
+  if (
+    !businessId
+    || !updatedRolePermissions
+    || typeof updatedRolePermissions !== 'object'
+    || Array.isArray(updatedRolePermissions)
+  ) {
+    return;
+  }
+
+  const updatedRoles = Array.from(new Set(
+    Object.keys(updatedRolePermissions)
+      .map((role) => normalizeRole(role))
+      .filter((role) => role && role !== 'super_admin')
+  ));
+
+  if (!updatedRoles.length) {
+    return;
+  }
+
+  const operations = updatedRoles.map((role) => {
+    const resolvedTemplate = mergeDeep(
+      getDefaultPermissions(role),
+      settingsRolePermissions?.[role] || {}
+    );
+
+    return {
+      updateMany: {
+        filter: {
+          business: businessId,
+          role: { $in: getUserRoleVariants(role) }
+        },
+        update: {
+          $set: {
+            permissions: resolvedTemplate
+          }
+        }
+      }
+    };
+  });
+
+  if (!operations.length) {
+    return;
+  }
+
+  await User.bulkWrite(operations);
 };
 
 // @desc    Get settings document
@@ -73,13 +157,16 @@ exports.updateSettings = asyncHandler(async (req, res, next) => {
   mergeSection(settings.notifications, notifications);
   mergeSection(settings.security, security);
   mergeSection(settings.backup, backup);
-  mergeSection(settings.rolePermissions, rolePermissions);
 
-  if (rolePermissions) {
+  if (rolePermissions && typeof rolePermissions === 'object' && !Array.isArray(rolePermissions)) {
+    settings.rolePermissions = mergeRolePermissionTemplates(settings.rolePermissions, rolePermissions);
     settings.markModified('rolePermissions');
   }
 
   await settings.save();
+  if (rolePermissions && typeof rolePermissions === 'object' && !Array.isArray(rolePermissions)) {
+    await syncRoleTemplatesToExistingUsers(req.user.business, settings.rolePermissions, rolePermissions);
+  }
   await logAuditEntry(req, 'update-settings', 'Settings', req.body);
 
   res.status(200).json({
