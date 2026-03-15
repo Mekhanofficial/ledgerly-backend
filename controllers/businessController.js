@@ -14,6 +14,7 @@ const {
   removeStoredAsset,
   uploadCloudinaryImage
 } = require('../utils/assetStorage');
+const { getTaxSettings: getScopedTaxSettings } = require('../utils/taxSettings');
 
 const resolveObjectField = (value) => {
   if (!value) return null;
@@ -319,17 +320,25 @@ exports.updateTaxSettings = asyncHandler(async (req, res, next) => {
     return next(new ErrorResponse('Business not found', 404));
   }
 
-  business.taxSettings = {
-    ...business.taxSettings,
-    ...req.body
+  if (req.body.taxRate !== undefined && Number(req.body.taxRate) < 0) {
+    return next(new ErrorResponse('Tax rate cannot be negative', 400));
+  }
+
+  const settings = await getScopedTaxSettings({ businessId: req.user.business });
+  const updates = {
+    taxEnabled: req.body.taxEnabled ?? settings.taxEnabled,
+    taxName: req.body.taxName ?? settings.taxName,
+    taxRate: req.body.taxRate ?? settings.taxRate,
+    allowManualOverride: req.body.allowManualOverride ?? settings.allowManualOverride
   };
 
-  await business.save();
-  await logAuditEntry(req, 'update-tax-settings', 'Business', { taxSettings: req.body });
+  settings.set(updates);
+  await settings.save();
+  await logAuditEntry(req, 'update-tax-settings', 'Business', { taxSettings: updates });
 
   res.status(200).json({
     success: true,
-    data: business.taxSettings
+    data: settings
   });
 });
 

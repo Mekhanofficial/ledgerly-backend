@@ -342,7 +342,7 @@ exports.createReceipt = asyncHandler(async (req, res, next) => {
     }
   }
   
-  const taxSettings = await getTaxSettings();
+  const taxSettings = await getTaxSettings({ businessId: req.user.business });
   const taxRateUsed = taxSettings.taxEnabled ? toNumber(taxSettings.taxRate, 0) : 0;
   const taxName = taxSettings.taxName || 'VAT';
   let computedTotals;

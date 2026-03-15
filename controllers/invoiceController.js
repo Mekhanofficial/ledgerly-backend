@@ -690,7 +690,7 @@ exports.createInvoice = asyncHandler(async (req, res, next) => {
   );
   req.body.recurring = recurringInput;
 
-  const taxSettings = await getTaxSettings();
+  const taxSettings = await getTaxSettings({ businessId: req.user.business });
   const {
     overrideRate,
     overrideAmount,
@@ -896,7 +896,7 @@ exports.updateInvoice = asyncHandler(async (req, res, next) => {
     || hasValue(req.body.amountPaid);
 
   if (shouldRecalculate) {
-    const taxSettings = await getTaxSettings();
+    const taxSettings = await getTaxSettings({ businessId: req.user.business });
     const {
       overrideRate,
       overrideAmount,

@@ -1,6 +1,7 @@
 const fs = require('fs');
 const crypto = require('crypto');
 const path = require('path');
+const sharp = require('sharp');
 const ErrorResponse = require('./errorResponse');
 const {
   destroyAsset,
@@ -14,6 +15,21 @@ const DEFAULT_PROFILE_IMAGE = 'uploads/profile/default-avatar.png';
 const LOCAL_UPLOAD_FALLBACK_ENABLED = String(process.env.LOCAL_UPLOAD_FALLBACK_ENABLED || 'false')
   .trim()
   .toLowerCase() !== 'false';
+const parsePositiveInt = (value, fallback) => {
+  const parsed = Number.parseInt(String(value ?? ''), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+};
+const IMAGE_OPTIMIZE_TARGET_MB = parsePositiveInt(process.env.IMAGE_UPLOAD_OPTIMIZE_TARGET_MB, 9);
+const IMAGE_OPTIMIZE_TARGET_BYTES = IMAGE_OPTIMIZE_TARGET_MB * 1024 * 1024;
+const IMAGE_OPTIMIZE_MAX_DIMENSION = parsePositiveInt(process.env.IMAGE_UPLOAD_OPTIMIZE_MAX_DIMENSION, 1600);
+const OPTIMIZABLE_IMAGE_MIME_TYPES = new Set([
+  'image/jpeg',
+  'image/jpg',
+  'image/pjpeg',
+  'image/png',
+  'image/x-png',
+  'image/webp'
+]);
 
 const localFolderMap = {
   profile: 'profile',
@@ -81,6 +97,96 @@ const resolveFileExtension = (file, fallback = '.bin') => {
 
   const fromMimeType = mimeTypeExtensionMap[String(file?.mimetype || '').trim().toLowerCase()];
   return fromMimeType || fallback;
+};
+
+const normalizeImageMimeType = (file) => {
+  const mimeType = String(file?.mimetype || '').trim().toLowerCase();
+  if (mimeType) return mimeType;
+
+  const extension = resolveFileExtension(file, '').toLowerCase();
+  if (extension === '.jpg' || extension === '.jpeg' || extension === '.jfif') return 'image/jpeg';
+  if (extension === '.png') return 'image/png';
+  if (extension === '.webp') return 'image/webp';
+  return '';
+};
+
+const buildResizeCandidates = (maxDimension) => {
+  const normalizedMax = Math.max(600, Number.parseInt(String(maxDimension || 1600), 10) || 1600);
+  const candidates = [normalizedMax, normalizedMax - 200, normalizedMax - 400, normalizedMax - 600]
+    .map((value) => Math.max(600, value));
+  return Array.from(new Set(candidates));
+};
+
+const optimizeImageUploadBuffer = async (file) => {
+  if (!file?.buffer || !Buffer.isBuffer(file.buffer)) return file;
+  if (file.buffer.length <= IMAGE_OPTIMIZE_TARGET_BYTES) return file;
+
+  const mimeType = normalizeImageMimeType(file);
+  if (!OPTIMIZABLE_IMAGE_MIME_TYPES.has(mimeType)) {
+    return file;
+  }
+
+  try {
+    const metadata = await sharp(file.buffer, { failOn: 'none' }).metadata();
+    const width = Number(metadata?.width || 0);
+    const height = Number(metadata?.height || 0);
+    const resizeCandidates = buildResizeCandidates(IMAGE_OPTIMIZE_MAX_DIMENSION);
+
+    let smallestBuffer = file.buffer;
+
+    for (const dimension of resizeCandidates) {
+      const shouldResize = width > dimension || height > dimension;
+      const qualityCandidates = mimeType.includes('png')
+        ? [null]
+        : [80, 72, 64, 58];
+
+      for (const quality of qualityCandidates) {
+        let pipeline = sharp(file.buffer, { failOn: 'none' }).rotate();
+
+        if (shouldResize) {
+          pipeline = pipeline.resize({
+            width: dimension,
+            height: dimension,
+            fit: 'inside',
+            withoutEnlargement: true
+          });
+        }
+
+        if (mimeType.includes('png')) {
+          pipeline = pipeline.png({ compressionLevel: 9, palette: true, effort: 8 });
+        } else if (mimeType.includes('webp')) {
+          pipeline = pipeline.webp({ quality, effort: 5 });
+        } else {
+          pipeline = pipeline.jpeg({ quality, mozjpeg: true });
+        }
+
+        const candidateBuffer = await pipeline.toBuffer();
+        if (candidateBuffer?.length && candidateBuffer.length < smallestBuffer.length) {
+          smallestBuffer = candidateBuffer;
+        }
+        if (candidateBuffer?.length && candidateBuffer.length <= IMAGE_OPTIMIZE_TARGET_BYTES) {
+          return {
+            ...file,
+            buffer: candidateBuffer,
+            size: candidateBuffer.length
+          };
+        }
+      }
+    }
+
+    if (smallestBuffer.length >= file.buffer.length) return file;
+
+    return {
+      ...file,
+      buffer: smallestBuffer,
+      size: smallestBuffer.length
+    };
+  } catch (error) {
+    console.warn('Image optimization skipped; using original upload buffer.', {
+      reason: error?.message || error
+    });
+    return file;
+  }
 };
 
 const resolveLocalAssetFolder = (assetType) =>
@@ -224,16 +330,17 @@ const resolveCloudinaryFolder = (assetType) => {
 
 const uploadCloudinaryImage = async (file, { assetType, fileName } = {}) => {
   if (!file?.buffer) return null;
+  const optimizedFile = await optimizeImageUploadBuffer(file);
 
-  return uploadWithLocalFallback(file, {
+  return uploadWithLocalFallback(optimizedFile, {
     assetType,
-    fileName: fileName || file.originalname || assetType || 'image',
+    fileName: fileName || optimizedFile.originalname || assetType || 'image',
     resourceType: 'image',
     extensionFallback: '.jpg',
     cloudinaryUploader: async () => {
-      const uploadResult = await uploadImageBuffer(file.buffer, {
+      const uploadResult = await uploadImageBuffer(optimizedFile.buffer, {
         folder: resolveCloudinaryFolder(assetType),
-        fileName: fileName || file.originalname || assetType || 'image'
+        fileName: fileName || optimizedFile.originalname || assetType || 'image'
       });
 
       return {

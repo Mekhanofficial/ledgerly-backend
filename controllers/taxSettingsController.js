@@ -1,15 +1,12 @@
-const TaxSettings = require('../models/TaxSettings');
 const ErrorResponse = require('../utils/errorResponse');
 const asyncHandler = require('../utils/asyncHandler');
+const { getTaxSettings } = require('../utils/taxSettings');
 
-// @desc    Get global tax settings
+// @desc    Get business tax settings
 // @route   GET /api/v1/tax-settings
 // @access  Private
 exports.getTaxSettings = asyncHandler(async (req, res) => {
-  let settings = await TaxSettings.findOne();
-  if (!settings) {
-    settings = await TaxSettings.create({});
-  }
+  const settings = await getTaxSettings({ businessId: req.user?.business });
 
   res.status(200).json({
     success: true,
@@ -17,9 +14,9 @@ exports.getTaxSettings = asyncHandler(async (req, res) => {
   });
 });
 
-// @desc    Update global tax settings
+// @desc    Update business tax settings
 // @route   PUT /api/v1/tax-settings
-// @access  Private (Super Admin only)
+// @access  Private (Admin/Accountant based on RBAC)
 exports.updateTaxSettings = asyncHandler(async (req, res, next) => {
   const payload = req.body || {};
 
@@ -27,10 +24,7 @@ exports.updateTaxSettings = asyncHandler(async (req, res, next) => {
     return next(new ErrorResponse('Tax rate cannot be negative', 400));
   }
 
-  let settings = await TaxSettings.findOne();
-  if (!settings) {
-    settings = await TaxSettings.create({});
-  }
+  const settings = await getTaxSettings({ businessId: req.user?.business });
 
   const updates = {
     taxEnabled: payload.taxEnabled ?? settings.taxEnabled,

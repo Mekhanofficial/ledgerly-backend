@@ -12,6 +12,7 @@ const stockAdjustmentRoutes = require('../../routes/stockAdjustments');
 const teamRoutes = require('../../routes/team');
 const reportRoutes = require('../../routes/reports');
 const settingsRoutes = require('../../routes/settings');
+const taxSettingsRoutes = require('../../routes/taxSettings');
 const errorHandler = require('../../middleware/error');
 
 const createTestApp = () => {
@@ -32,6 +33,7 @@ const createTestApp = () => {
   app.use('/api/v1/team', teamRoutes);
   app.use('/api/v1/reports', reportRoutes);
   app.use('/api/v1/settings', settingsRoutes);
+  app.use('/api/v1/tax-settings', taxSettingsRoutes);
 
   app.get('/health', (req, res) => {
     res.status(200).json({

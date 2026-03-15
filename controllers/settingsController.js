@@ -272,7 +272,18 @@ exports.exportBackupSnapshot = asyncHandler(async (req, res) => {
   ] = await Promise.all([
     Business.findById(businessId).lean(),
     Settings.findOne({ business: businessId }).lean(),
-    TaxSettings.findOne().lean(),
+    (async () => {
+      const scoped = await TaxSettings.findOne({ business: businessId }).lean();
+      if (scoped) return scoped;
+      return TaxSettings.findOne({
+        $or: [
+          { business: null },
+          { business: { $exists: false } }
+        ]
+      })
+        .sort({ updatedAt: -1 })
+        .lean();
+    })(),
     User.find({ business: businessId })
       .select('-password -resetPasswordToken -resetPasswordExpire -verificationToken -invitationToken -invitationExpire')
       .lean(),
@@ -324,7 +335,7 @@ exports.exportBackupSnapshot = asyncHandler(async (req, res) => {
       auditLogs
     },
     notes: [
-      'Tax settings are currently exported from the global tax settings collection.',
+      'Tax settings are exported from the business-scoped tax settings collection.',
       'Audit logs are capped to the most recent 1000 entries in this export.'
     ]
   };

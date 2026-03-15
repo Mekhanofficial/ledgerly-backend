@@ -1,6 +1,11 @@
 const mongoose = require('mongoose');
 
 const TaxSettingsSchema = new mongoose.Schema({
+  business: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Business',
+    default: null
+  },
   taxEnabled: {
     type: Boolean,
     default: true
@@ -22,5 +27,13 @@ const TaxSettingsSchema = new mongoose.Schema({
 }, {
   timestamps: true
 });
+
+TaxSettingsSchema.index(
+  { business: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { business: { $type: 'objectId' } }
+  }
+);
 
 module.exports = mongoose.model('TaxSettings', TaxSettingsSchema);

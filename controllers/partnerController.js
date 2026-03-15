@@ -220,8 +220,8 @@ const normalizeItems = async ({ businessId, items }) => {
   return { normalized, productMap };
 };
 
-const resolveTaxConfiguration = async (payload) => {
-  const taxSettings = await getTaxSettings();
+const resolveTaxConfiguration = async (payload, businessId) => {
+  const taxSettings = await getTaxSettings({ businessId });
   const requestedRate = hasValue(payload.taxRateUsed)
     ? payload.taxRateUsed
     : payload.taxRate;
@@ -428,7 +428,7 @@ exports.createPartnerInvoice = asyncHandler(async (req, res, next) => {
     taxAmountOverride,
     isTaxOverridden,
     taxName
-  } = await resolveTaxConfiguration(req.body);
+  } = await resolveTaxConfiguration(req.body, req.user.business);
 
   let totals;
   try {

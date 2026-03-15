@@ -74,6 +74,17 @@ const errorHandler = (err, req, res, next) => {
     }
   }
 
+  const rawErrorMessage = String(err?.message || '').trim();
+  if (/file size too large|max file size|payload too large/i.test(rawErrorMessage)) {
+    const cloudinaryLikeError = Number.isFinite(Number(err?.http_code)) || /cloudinary/i.test(String(err?.name || ''));
+    if (cloudinaryLikeError) {
+      error = new ErrorResponse(
+        'Uploaded image is still too large for cloud storage. Try a smaller file or use a more compressed JPEG/WEBP image.',
+        400
+      );
+    }
+  }
+
   if (err.type === 'entity.too.large') {
     error = new ErrorResponse(
       'Request payload is too large. Please reduce attachment size and try again.',
