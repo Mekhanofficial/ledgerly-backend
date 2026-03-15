@@ -98,8 +98,15 @@ exports.updateBusinessProfile = asyncHandler(async (req, res, next) => {
   const previousLogoPublicId = business.logoPublicId || '';
   const parsedAddress = resolveObjectField(req.body.address);
   const parsedSettings = resolveObjectField(req.body.settings);
+  const removeLogoRequested = (() => {
+    if (typeof req.body.removeLogo === 'boolean') {
+      return req.body.removeLogo;
+    }
+    const normalized = String(req.body.removeLogo || '').trim().toLowerCase();
+    return normalized === 'true' || normalized === '1' || normalized === 'yes';
+  })();
   const requestedLogoValue = req.body.logo === undefined
-    ? undefined
+    ? (removeLogoRequested ? '' : undefined)
     : String(req.body.logo || '').trim();
   const wantsUploadedLogo = Boolean(req.file?.buffer);
   const wantsRemoteLogo = requestedLogoValue !== undefined
@@ -123,15 +130,18 @@ exports.updateBusinessProfile = asyncHandler(async (req, res, next) => {
   let uploadedLogo = null;
 
   allowedFields.forEach(field => {
-    if (req.body[field] !== undefined) {
-      const nextValue = field === 'logo' ? requestedLogoValue : req.body[field];
-      changes[field] = nextValue;
-      business[field] = nextValue;
+    const hasFieldUpdate = field === 'logo'
+      ? (req.body.logo !== undefined || removeLogoRequested)
+      : req.body[field] !== undefined;
+    if (!hasFieldUpdate) return;
 
-      if (field === 'logo') {
-        business.logoPublicId = '';
-        shouldCleanupPreviousLogo = nextValue !== previousLogo;
-      }
+    const nextValue = field === 'logo' ? requestedLogoValue : req.body[field];
+    changes[field] = nextValue;
+    business[field] = nextValue;
+
+    if (field === 'logo') {
+      business.logoPublicId = '';
+      shouldCleanupPreviousLogo = nextValue !== previousLogo;
     }
   });
 

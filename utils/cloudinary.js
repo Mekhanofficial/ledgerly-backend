@@ -80,6 +80,41 @@ const uploadImageBuffer = (buffer, options = {}) =>
     resourceType: 'image'
   });
 
+const buildPrivateDownloadUrl = (
+  publicId,
+  format,
+  {
+    resourceType = 'raw',
+    type = 'upload',
+    attachment = false,
+    expiresInSeconds = 120
+  } = {}
+) => {
+  const normalizedPublicId = String(publicId || '').trim();
+  const normalizedFormat = String(format || '').trim().replace(/^\./, '');
+  if (!normalizedPublicId || !normalizedFormat) {
+    return '';
+  }
+
+  ensureCloudinaryConfigured();
+
+  const ttlSeconds = Number.parseInt(String(expiresInSeconds ?? ''), 10);
+  const expiresAt = Number.isFinite(ttlSeconds) && ttlSeconds > 0
+    ? Math.floor(Date.now() / 1000) + ttlSeconds
+    : undefined;
+
+  return cloudinary.utils.private_download_url(
+    normalizedPublicId,
+    normalizedFormat,
+    {
+      resource_type: resourceType,
+      type,
+      attachment,
+      ...(expiresAt ? { expires_at: expiresAt } : {})
+    }
+  );
+};
+
 const destroyAsset = async (publicId, { resourceType = 'image' } = {}) => {
   const normalizedPublicId = String(publicId || '').trim();
   if (!normalizedPublicId) return null;
@@ -105,6 +140,7 @@ const extractPublicIdFromUrl = (value) => {
 };
 
 module.exports = {
+  buildPrivateDownloadUrl,
   destroyAsset,
   destroyImage,
   ensureCloudinaryConfigured,

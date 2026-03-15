@@ -1,6 +1,13 @@
 const ErrorResponse = require('../utils/errorResponse');
 const { captureException } = require('../utils/monitoring');
 
+const parsePositiveInt = (value, fallback) => {
+  const parsed = Number.parseInt(String(value ?? ''), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+};
+
+const DOCUMENT_UPLOAD_MAX_MB = parsePositiveInt(process.env.MAX_DOCUMENT_UPLOAD_MB, 25);
+
 const errorHandler = (err, req, res, next) => {
   let error = { ...err };
   error.message = err.message;
@@ -50,7 +57,7 @@ const errorHandler = (err, req, res, next) => {
   if (err.name === 'MulterError') {
     if (err.code === 'LIMIT_FILE_SIZE') {
       error = new ErrorResponse(
-        'File is too large for the current upload channel. Please try a smaller file or another upload method.',
+        `File is too large. Maximum allowed upload size is ${DOCUMENT_UPLOAD_MAX_MB}MB.`,
         400
       );
     } else {

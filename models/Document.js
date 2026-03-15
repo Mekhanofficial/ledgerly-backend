@@ -23,6 +23,18 @@ const DocumentSchema = new mongoose.Schema(
     fileResourceType: String,
     mimeType: String,
     size: Number,
+    folder: {
+      type: String,
+      default: ''
+    },
+    tags: {
+      type: [String],
+      default: []
+    },
+    isArchived: {
+      type: Boolean,
+      default: false
+    },
     type: {
       type: String,
       enum: ['document', 'scan'],
@@ -34,5 +46,8 @@ const DocumentSchema = new mongoose.Schema(
 
 DocumentSchema.index({ business: 1, createdAt: -1 });
 DocumentSchema.index({ business: 1, name: 1 });
+DocumentSchema.index({ business: 1, folder: 1 });
+DocumentSchema.index({ business: 1, tags: 1 });
+DocumentSchema.index({ business: 1, isArchived: 1 });
 
 module.exports = mongoose.model('Document', DocumentSchema);

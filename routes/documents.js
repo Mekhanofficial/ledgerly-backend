@@ -2,7 +2,9 @@ const express = require('express');
 const {
   getDocuments,
   getDocument,
+  getDocumentContent,
   uploadDocument,
+  updateDocument,
   deleteDocument
 } = require('../controllers/documentController');
 const { protect, authorize } = require('../middleware/auth');
@@ -23,6 +25,11 @@ router
 router
   .route('/:id')
   .get(protect, authorize('admin', 'accountant', 'staff'), getDocument)
+  .put(protect, authorize('admin', 'accountant', 'staff'), updateDocument)
   .delete(protect, authorize('admin', 'accountant', 'staff'), deleteDocument);
+
+router
+  .route('/:id/content')
+  .get(protect, authorize('admin', 'accountant', 'staff'), getDocumentContent);
 
 module.exports = router;

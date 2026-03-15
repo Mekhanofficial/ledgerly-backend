@@ -557,6 +557,14 @@ exports.updateDetails = asyncHandler(async (req, res, next) => {
     return next(new ErrorResponse('User not found', 404));
   }
 
+  const removeProfileImageRequested = (() => {
+    if (typeof req.body.removeProfileImage === 'boolean') {
+      return req.body.removeProfileImage;
+    }
+    const normalized = String(req.body.removeProfileImage || '').trim().toLowerCase();
+    return normalized === 'true' || normalized === '1' || normalized === 'yes';
+  })();
+
   const updatedFields = new Set();
 
   if (req.body.name !== undefined && req.body.name !== '') {
@@ -575,10 +583,21 @@ exports.updateDetails = asyncHandler(async (req, res, next) => {
   let previousProfileImage = '';
   let previousProfileImagePublicId = '';
   let uploadedProfileImage = null;
+  const shouldRemoveProfileImage = removeProfileImageRequested && !req.file?.buffer;
 
-  if (req.file?.buffer) {
+  if (shouldRemoveProfileImage) {
     previousProfileImage = user.profileImage || '';
     previousProfileImagePublicId = user.profileImagePublicId || '';
+    user.profileImage = DEFAULT_PROFILE_IMAGE;
+    user.profileImagePublicId = '';
+    updatedFields.add('profileImage');
+  }
+
+  if (req.file?.buffer) {
+    if (!previousProfileImage) {
+      previousProfileImage = user.profileImage || '';
+      previousProfileImagePublicId = user.profileImagePublicId || '';
+    }
     uploadedProfileImage = await uploadCloudinaryImage(req.file, {
       assetType: 'profile',
       fileName: user.name || user.email || 'profile-image'

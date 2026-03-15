@@ -11,7 +11,7 @@ const {
 } = require('./cloudinary');
 
 const DEFAULT_PROFILE_IMAGE = 'uploads/profile/default-avatar.png';
-const LOCAL_UPLOAD_FALLBACK_ENABLED = String(process.env.LOCAL_UPLOAD_FALLBACK_ENABLED || 'true')
+const LOCAL_UPLOAD_FALLBACK_ENABLED = String(process.env.LOCAL_UPLOAD_FALLBACK_ENABLED || 'false')
   .trim()
   .toLowerCase() !== 'false';
 
