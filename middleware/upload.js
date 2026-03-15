@@ -7,7 +7,7 @@ const parsePositiveInt = (value, fallback) => {
   const parsed = Number.parseInt(String(value ?? ''), 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 };
-const DOCUMENT_UPLOAD_MAX_MB = parsePositiveInt(process.env.MAX_DOCUMENT_UPLOAD_MB, 25);
+const DOCUMENT_UPLOAD_MAX_MB = parsePositiveInt(process.env.MAX_DOCUMENT_UPLOAD_MB, 50);
 const DOCUMENT_UPLOAD_MAX_BYTES = DOCUMENT_UPLOAD_MAX_MB * 1024 * 1024;
 
 // Check file type

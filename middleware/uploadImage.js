@@ -3,6 +3,12 @@ const path = require('path');
 const ErrorResponse = require('../utils/errorResponse');
 
 const storage = multer.memoryStorage();
+const parsePositiveInt = (value, fallback) => {
+  const parsed = Number.parseInt(String(value ?? ''), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+};
+const IMAGE_UPLOAD_MAX_MB = parsePositiveInt(process.env.MAX_IMAGE_UPLOAD_MB, 10);
+const IMAGE_UPLOAD_MAX_BYTES = IMAGE_UPLOAD_MAX_MB * 1024 * 1024;
 
 const defaultImageExtensions = new Set([
   '.jpeg',
@@ -93,7 +99,7 @@ const fileFilter = (req, file, cb) => {
 const uploadImage = multer({
   storage,
   limits: {
-    fileSize: 5 * 1024 * 1024,
+    fileSize: IMAGE_UPLOAD_MAX_BYTES,
     files: 2
   },
   fileFilter

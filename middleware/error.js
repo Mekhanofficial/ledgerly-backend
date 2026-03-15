@@ -6,7 +6,9 @@ const parsePositiveInt = (value, fallback) => {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 };
 
-const DOCUMENT_UPLOAD_MAX_MB = parsePositiveInt(process.env.MAX_DOCUMENT_UPLOAD_MB, 25);
+const DOCUMENT_UPLOAD_MAX_MB = parsePositiveInt(process.env.MAX_DOCUMENT_UPLOAD_MB, 50);
+const IMAGE_UPLOAD_MAX_MB = parsePositiveInt(process.env.MAX_IMAGE_UPLOAD_MB, 10);
+const IMAGE_UPLOAD_FIELDS = new Set(['profileImage', 'image', 'productImage', 'logo']);
 
 const errorHandler = (err, req, res, next) => {
   let error = { ...err };
@@ -56,8 +58,15 @@ const errorHandler = (err, req, res, next) => {
 
   if (err.name === 'MulterError') {
     if (err.code === 'LIMIT_FILE_SIZE') {
+      const field = String(err.field || '').trim();
+      const imageUploadError = IMAGE_UPLOAD_FIELDS.has(field);
+      const message = imageUploadError
+        ? `File is too large. Maximum allowed image upload size is ${IMAGE_UPLOAD_MAX_MB}MB.`
+        : field
+          ? `File is too large. Maximum allowed upload size is ${DOCUMENT_UPLOAD_MAX_MB}MB.`
+          : `File is too large. Maximum upload size is ${IMAGE_UPLOAD_MAX_MB}MB for images and ${DOCUMENT_UPLOAD_MAX_MB}MB for documents.`;
       error = new ErrorResponse(
-        `File is too large. Maximum allowed upload size is ${DOCUMENT_UPLOAD_MAX_MB}MB.`,
+        message,
         400
       );
     } else {
