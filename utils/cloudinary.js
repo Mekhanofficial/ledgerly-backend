@@ -4,11 +4,41 @@ const { v2: cloudinary } = require('cloudinary');
 
 const readEnv = (name) => String(process.env[name] || '').trim();
 
-const getCloudinaryConfig = () => ({
-  cloudName: readEnv('CLOUDINARY_CLOUD_NAME'),
-  apiKey: readEnv('CLOUDINARY_API_KEY'),
-  apiSecret: readEnv('CLOUDINARY_API_SECRET')
-});
+const parseCloudinaryUrl = (value) => {
+  const rawValue = String(value || '').trim();
+  if (!rawValue) return null;
+
+  try {
+    const parsed = new URL(rawValue);
+    if (parsed.protocol !== 'cloudinary:') return null;
+
+    const cloudName = decodeURIComponent(parsed.hostname || '').trim();
+    const apiKey = decodeURIComponent(parsed.username || '').trim();
+    const apiSecret = decodeURIComponent(parsed.password || '').trim();
+
+    if (!cloudName || !apiKey || !apiSecret) return null;
+
+    return { cloudName, apiKey, apiSecret };
+  } catch {
+    return null;
+  }
+};
+
+const getCloudinaryConfig = () => {
+  const parsedFromUrl = parseCloudinaryUrl(readEnv('CLOUDINARY_URL'));
+  const cloudName = readEnv('CLOUDINARY_CLOUD_NAME')
+    || readEnv('CLOUDINARY_CLOUD')
+    || parsedFromUrl?.cloudName
+    || '';
+  const apiKey = readEnv('CLOUDINARY_API_KEY') || parsedFromUrl?.apiKey || '';
+  const apiSecret = readEnv('CLOUDINARY_API_SECRET') || parsedFromUrl?.apiSecret || '';
+
+  return {
+    cloudName,
+    apiKey,
+    apiSecret
+  };
+};
 
 let isConfigured = false;
 
@@ -20,7 +50,7 @@ const hasCloudinaryCredentials = () => {
 const ensureCloudinaryConfigured = () => {
   if (!hasCloudinaryCredentials()) {
     throw new Error(
-      'Cloudinary is not configured. Set CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, and CLOUDINARY_API_SECRET.'
+      'Cloudinary is not configured. Set CLOUDINARY_CLOUD_NAME/CLOUDINARY_API_KEY/CLOUDINARY_API_SECRET or CLOUDINARY_URL.'
     );
   }
 
