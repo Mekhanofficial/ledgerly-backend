@@ -1,8 +1,31 @@
 const multer = require('multer');
+const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const ErrorResponse = require('../utils/errorResponse');
 
-const storage = multer.memoryStorage();
+const TMP_UPLOAD_DIR = path.join(__dirname, '..', 'uploads', 'tmp');
+fs.mkdirSync(TMP_UPLOAD_DIR, { recursive: true });
+
+const sanitizeFileNameSegment = (value, fallback = 'file') => {
+  const parsed = path.parse(String(value || fallback));
+  const base = String(parsed.name || fallback)
+    .replace(/[^a-zA-Z0-9_-]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+    .toLowerCase();
+  return base || fallback;
+};
+
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, TMP_UPLOAD_DIR),
+  filename: (req, file, cb) => {
+    const extension = path.extname(String(file?.originalname || '')).toLowerCase() || '.bin';
+    const safeBase = sanitizeFileNameSegment(file?.originalname || 'document', 'document');
+    const uniqueSuffix = `${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
+    cb(null, `${safeBase}-${uniqueSuffix}${extension}`);
+  }
+});
 const parsePositiveInt = (value, fallback) => {
   const parsed = Number.parseInt(String(value ?? ''), 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;

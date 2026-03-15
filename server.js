@@ -32,12 +32,18 @@ const API_RATE_LIMIT_WINDOW_MS = parseEnvPositiveInt(process.env.API_RATE_LIMIT_
 const API_RATE_LIMIT_MAX = parseEnvPositiveInt(process.env.API_RATE_LIMIT_MAX, 1000);
 const AUTH_RATE_LIMIT_MAX = parseEnvPositiveInt(process.env.AUTH_RATE_LIMIT_MAX, 120);
 const UPLOAD_CACHE_MAX_AGE_SECONDS = parseEnvPositiveInt(process.env.UPLOAD_CACHE_MAX_AGE_SECONDS, 24 * 60 * 60);
+const shouldCaptureRawBody = (req) => {
+  const url = String(req?.originalUrl || req?.url || '').toLowerCase();
+  return url.startsWith('/api/v1/webhooks') || url.startsWith('/api/v1/payments/webhook');
+};
 
 // Body parser (capture raw body for webhook verification)
 app.use(express.json({
   limit: REQUEST_BODY_LIMIT,
   verify: (req, res, buf) => {
-    req.rawBody = buf;
+    if (shouldCaptureRawBody(req)) {
+      req.rawBody = buf;
+    }
   }
 }));
 app.use(express.urlencoded({ extended: true, limit: REQUEST_BODY_LIMIT }));

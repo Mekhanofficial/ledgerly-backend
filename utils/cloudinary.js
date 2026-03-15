@@ -110,6 +110,29 @@ const uploadImageBuffer = (buffer, options = {}) =>
     resourceType: 'image'
   });
 
+const uploadFilePath = (filePath, { folder, fileName, resourceType = 'auto' } = {}) =>
+  new Promise((resolve, reject) => {
+    ensureCloudinaryConfigured();
+
+    const options = {
+      resource_type: resourceType,
+      overwrite: false,
+      public_id: sanitizePublicIdSegment(fileName, 'file')
+    };
+
+    if (folder) {
+      options.folder = folder;
+    }
+
+    cloudinary.uploader.upload(String(filePath || ''), options, (error, result) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve(result);
+    });
+  });
+
 const buildPrivateDownloadUrl = (
   publicId,
   format,
@@ -177,6 +200,7 @@ module.exports = {
   extractPublicIdFromUrl,
   getCloudinaryConfig,
   hasCloudinaryCredentials,
+  uploadFilePath,
   uploadBuffer,
   uploadImageBuffer
 };

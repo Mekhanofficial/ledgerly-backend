@@ -7,6 +7,7 @@ const {
   destroyAsset,
   extractPublicIdFromUrl,
   hasCloudinaryCredentials,
+  uploadFilePath,
   uploadBuffer,
   uploadImageBuffer
 } = require('./cloudinary');
@@ -21,6 +22,8 @@ const parsePositiveInt = (value, fallback) => {
 };
 const IMAGE_OPTIMIZE_TARGET_MB = parsePositiveInt(process.env.IMAGE_UPLOAD_OPTIMIZE_TARGET_MB, 9);
 const IMAGE_OPTIMIZE_TARGET_BYTES = IMAGE_OPTIMIZE_TARGET_MB * 1024 * 1024;
+const IMAGE_OPTIMIZE_MAX_INPUT_MB = parsePositiveInt(process.env.IMAGE_UPLOAD_OPTIMIZE_MAX_INPUT_MB, 8);
+const IMAGE_OPTIMIZE_MAX_INPUT_BYTES = IMAGE_OPTIMIZE_MAX_INPUT_MB * 1024 * 1024;
 const IMAGE_OPTIMIZE_MAX_DIMENSION = parsePositiveInt(process.env.IMAGE_UPLOAD_OPTIMIZE_MAX_DIMENSION, 1600);
 const OPTIMIZABLE_IMAGE_MIME_TYPES = new Set([
   'image/jpeg',
@@ -120,6 +123,10 @@ const buildResizeCandidates = (maxDimension) => {
 const optimizeImageUploadBuffer = async (file) => {
   if (!file?.buffer || !Buffer.isBuffer(file.buffer)) return file;
   if (file.buffer.length <= IMAGE_OPTIMIZE_TARGET_BYTES) return file;
+  if (file.buffer.length > IMAGE_OPTIMIZE_MAX_INPUT_BYTES) {
+    // Skip costly transform loops for very large uploads to avoid memory spikes on small instances.
+    return file;
+  }
 
   const mimeType = normalizeImageMimeType(file);
   if (!OPTIMIZABLE_IMAGE_MIME_TYPES.has(mimeType)) {
@@ -201,7 +208,9 @@ const uploadLocalFile = async (
     extensionFallback = '.bin'
   } = {}
 ) => {
-  if (!file?.buffer) return null;
+  const hasBuffer = Boolean(file?.buffer && Buffer.isBuffer(file.buffer));
+  const hasPath = Boolean(String(file?.path || '').trim());
+  if (!hasBuffer && !hasPath) return null;
 
   const folderName = resolveLocalAssetFolder(assetType);
   const uploadsRoot = path.join(__dirname, '..', 'uploads', folderName);
@@ -213,7 +222,11 @@ const uploadLocalFile = async (
   const outputFileName = `${safeBaseName}-${suffix}${extension}`;
   const outputPath = path.join(uploadsRoot, outputFileName);
 
-  await fs.promises.writeFile(outputPath, file.buffer);
+  if (hasBuffer) {
+    await fs.promises.writeFile(outputPath, file.buffer);
+  } else {
+    await fs.promises.copyFile(file.path, outputPath);
+  }
 
   return {
     url: normalizeStoredAsset(path.join('uploads', folderName, outputFileName)),
@@ -232,7 +245,9 @@ const uploadWithLocalFallback = async (
     cloudinaryUploader
   } = {}
 ) => {
-  if (!file?.buffer) return null;
+  const hasBuffer = Boolean(file?.buffer && Buffer.isBuffer(file.buffer));
+  const hasPath = Boolean(String(file?.path || '').trim());
+  if (!hasBuffer && !hasPath) return null;
 
   const fallbackToLocal = async (reason) => {
     if (!LOCAL_UPLOAD_FALLBACK_ENABLED) {
@@ -353,7 +368,9 @@ const uploadCloudinaryImage = async (file, { assetType, fileName } = {}) => {
 };
 
 const uploadCloudinaryFile = async (file, { assetType, fileName, resourceType = 'auto' } = {}) => {
-  if (!file?.buffer) return null;
+  const hasBuffer = Boolean(file?.buffer && Buffer.isBuffer(file.buffer));
+  const filePath = String(file?.path || '').trim();
+  if (!hasBuffer && !filePath) return null;
 
   return uploadWithLocalFallback(file, {
     assetType,
@@ -361,11 +378,17 @@ const uploadCloudinaryFile = async (file, { assetType, fileName, resourceType = 
     resourceType,
     extensionFallback: '.bin',
     cloudinaryUploader: async () => {
-      const uploadResult = await uploadBuffer(file.buffer, {
-        folder: resolveCloudinaryFolder(assetType),
-        fileName: fileName || file.originalname || assetType || 'file',
-        resourceType
-      });
+      const uploadResult = hasBuffer
+        ? await uploadBuffer(file.buffer, {
+          folder: resolveCloudinaryFolder(assetType),
+          fileName: fileName || file.originalname || assetType || 'file',
+          resourceType
+        })
+        : await uploadFilePath(filePath, {
+          folder: resolveCloudinaryFolder(assetType),
+          fileName: fileName || file.originalname || assetType || 'file',
+          resourceType
+        });
 
       return {
         url: uploadResult?.secure_url || uploadResult?.url || '',

@@ -37,6 +37,18 @@ const DOCUMENT_SIGNED_DOWNLOAD_TTL_SECONDS = parsePositiveInt(
   120
 );
 
+const cleanupTemporaryUploadFile = async (file) => {
+  const temporaryPath = String(file?.path || '').trim();
+  if (!temporaryPath) return;
+  try {
+    await fs.promises.unlink(temporaryPath);
+  } catch (error) {
+    if (error?.code !== 'ENOENT') {
+      console.warn('Failed to remove temporary uploaded file:', error?.message || error);
+    }
+  }
+};
+
 const DOCUMENT_RULES = {
   starter: {
     maxDocuments: parsePositiveInt(process.env.STARTER_MAX_DOCUMENTS, 50),
@@ -434,14 +446,15 @@ exports.uploadDocument = asyncHandler(async (req, res, next) => {
   const uploadResourceType = String(req.file.mimetype || '').toLowerCase().startsWith('image/')
     ? 'image'
     : 'raw';
-  const uploadedFile = await uploadCloudinaryFile(req.file, {
-    assetType: 'document',
-    fileName: resolvedName || originalName || 'document',
-    resourceType: uploadResourceType
-  });
-
+  let uploadedFile = null;
   let document;
   try {
+    uploadedFile = await uploadCloudinaryFile(req.file, {
+      assetType: 'document',
+      fileName: resolvedName || originalName || 'document',
+      resourceType: uploadResourceType
+    });
+
     document = await Document.create({
       business: business._id,
       uploadedBy: req.user.id,
@@ -466,6 +479,8 @@ exports.uploadDocument = asyncHandler(async (req, res, next) => {
       });
     }
     throw error;
+  } finally {
+    await cleanupTemporaryUploadFile(req.file);
   }
 
   res.status(201).json({
