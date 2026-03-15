@@ -463,6 +463,9 @@ exports.getInvoices = asyncHandler(async (req, res, next) => {
   } = req.query;
   const parsedPage = Math.max(Number.parseInt(page, 10) || 1, 1);
   const parsedLimit = Math.min(Math.max(Number.parseInt(limit, 10) || 20, 1), 100);
+  const includeSummary = !['false', '0', 'no'].includes(
+    String(req.query.includeSummary ?? 'true').trim().toLowerCase()
+  );
 
   // Build query
   let query = { business: req.user.business };
@@ -499,17 +502,14 @@ exports.getInvoices = asyncHandler(async (req, res, next) => {
 
   // Execute query with pagination
   const skip = (parsedPage - 1) * parsedLimit;
-
-  const [invoices, total, summary] = await Promise.all([
-    Invoice.find(query)
-      .populate('customer', 'name email phone company')
-      .populate('createdBy', 'name email')
-      .sort(sort)
-      .skip(skip)
-      .limit(parsedLimit)
-      .lean(),
-    Invoice.countDocuments(query),
-    Invoice.aggregate([
+  const defaultSummary = {
+    totalAmount: 0,
+    totalPaid: 0,
+    totalOutstanding: 0,
+    count: 0
+  };
+  const summaryPromise = includeSummary
+    ? Invoice.aggregate([
       { $match: query },
       {
         $group: {
@@ -521,21 +521,33 @@ exports.getInvoices = asyncHandler(async (req, res, next) => {
         }
       }
     ])
+    : Promise.resolve([]);
+
+  const [invoices, total, summary] = await Promise.all([
+    Invoice.find(query)
+      .populate('customer', 'name email phone company')
+      .populate('createdBy', 'name email')
+      .sort(sort)
+      .skip(skip)
+      .limit(parsedLimit)
+      .lean(),
+    Invoice.countDocuments(query),
+    summaryPromise
   ]);
 
-  res.status(200).json({
+  const response = {
     success: true,
     count: invoices.length,
     total,
     pages: Math.ceil(total / parsedLimit),
-    summary: summary[0] || {
-      totalAmount: 0,
-      totalPaid: 0,
-      totalOutstanding: 0,
-      count: 0
-    },
     data: invoices
-  });
+  };
+
+  if (includeSummary) {
+    response.summary = summary[0] || defaultSummary;
+  }
+
+  res.status(200).json(response);
 });
 
 // @desc    Get single invoice
