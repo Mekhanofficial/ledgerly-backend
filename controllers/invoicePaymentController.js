@@ -130,6 +130,100 @@ const getGlobalPaystackConfig = () => {
   };
 };
 
+const normalizeCurrencyCode = (value, fallback = 'NGN') => {
+  const normalized = String(value || fallback).trim().toUpperCase();
+  return normalized || fallback;
+};
+
+const parseSupportedCurrencies = (value, fallback = []) => {
+  const tokens = Array.isArray(value)
+    ? value
+    : String(value || '')
+        .split(',')
+        .map((entry) => entry.trim())
+        .filter(Boolean);
+
+  const normalized = [...new Set(
+    tokens
+      .map((entry) => normalizeCurrencyCode(entry, ''))
+      .filter(Boolean)
+  )];
+
+  if (normalized.length > 0) return normalized;
+
+  return [...new Set(
+    (Array.isArray(fallback) ? fallback : [fallback])
+      .map((entry) => normalizeCurrencyCode(entry, ''))
+      .filter(Boolean)
+  )];
+};
+
+const getGlobalSupportedPaystackCurrencies = () => {
+  const configured = parseSupportedCurrencies(process.env.PAYSTACK_SUPPORTED_CURRENCIES);
+  if (configured.length > 0) return configured;
+  return parseSupportedCurrencies(process.env.PAYSTACK_CURRENCY, ['NGN']);
+};
+
+const buildUnsupportedCurrencyMessage = (currency, supportedCurrencies = []) => {
+  const normalizedCurrency = normalizeCurrencyCode(currency);
+  const supported = parseSupportedCurrencies(supportedCurrencies);
+  if (supported.length === 0) {
+    return `Online payment is not available for ${normalizedCurrency} invoices with the current Paystack configuration.`;
+  }
+  return `Online payment is not available for ${normalizedCurrency} invoices with the current Paystack configuration. Supported currencies: ${supported.join(', ')}.`;
+};
+
+const resolvePublicInvoicePaystackAvailability = ({ invoice, business, businessWithSecret = null } = {}) => {
+  const status = String(invoice?.status || '').toLowerCase();
+  const amountDue = Number(invoice?.balance ?? 0);
+  const invoiceCurrency = normalizeCurrencyCode(invoice?.currency || business?.currency || 'NGN');
+  const globalPaystack = getGlobalPaystackConfig();
+  const paystackPublicKey = businessWithSecret?.paystack?.publicKey || business?.paystack?.publicKey || '';
+  const paystackEnabled = Boolean(
+    businessWithSecret?.paystack?.enabled
+    ?? business?.paystack?.enabled
+  );
+  const hasPaystackSecretKey = businessWithSecret
+    ? Boolean(businessWithSecret.paystack?.secretKeyEncrypted)
+    : false;
+
+  const hasBusinessPaystackConfig =
+    paystackEnabled
+    && Boolean(String(paystackPublicKey || '').trim())
+    && (businessWithSecret ? hasPaystackSecretKey : true);
+
+  const supportedCurrencies = hasBusinessPaystackConfig
+    ? parseSupportedCurrencies(
+        businessWithSecret?.paystack?.supportedCurrencies
+        || business?.paystack?.supportedCurrencies,
+        [business?.currency || invoiceCurrency]
+      )
+    : getGlobalSupportedPaystackCurrencies();
+
+  const hasGatewayConfig = hasBusinessPaystackConfig || globalPaystack.enabled;
+  const currencySupported = supportedCurrencies.includes(invoiceCurrency);
+  const availabilityReason = !hasGatewayConfig
+    ? 'Online payment is not configured for this invoice.'
+    : !currencySupported
+      ? buildUnsupportedCurrencyMessage(invoiceCurrency, supportedCurrencies)
+      : '';
+
+  return {
+    invoiceCurrency,
+    hasBusinessPaystackConfig,
+    hasGatewayConfig,
+    supportedCurrencies,
+    currencySupported,
+    availabilityReason,
+    resolvedPublicKey: hasBusinessPaystackConfig ? paystackPublicKey : globalPaystack.publicKey,
+    canPayOnline:
+      !TERMINAL_INVOICE_STATUSES.has(status)
+      && amountDue > 0
+      && hasGatewayConfig
+      && currencySupported
+  };
+};
+
 const isObjectIdString = (value) => /^[a-f\d]{24}$/i.test(String(value || '').trim());
 
 const resolvePaystackMetadata = (paystackData = {}) => {
@@ -682,13 +776,24 @@ const initializePublicInvoicePayment = async ({ req, invoice }) => {
 
   const business = await loadBusinessWithSecret(invoice.business?._id || invoice.business);
   let paystackConnection = validateBusinessPaystackConnection(business);
+  const paystackAvailability = resolvePublicInvoicePaystackAvailability({
+    invoice,
+    business: invoice?.business || business,
+    businessWithSecret: business
+  });
 
   const customerEmail = invoice.clientEmail || invoice.customer?.email;
   if (!customerEmail) {
     throw new ErrorResponse('Customer email is required to initialize payment', 400);
   }
 
-  const currency = String(invoice.currency || business.currency || 'NGN').trim().toUpperCase();
+  const currency = paystackAvailability.invoiceCurrency;
+  if (!paystackAvailability.currencySupported) {
+    throw new ErrorResponse(
+      paystackAvailability.availabilityReason || buildUnsupportedCurrencyMessage(currency, paystackAvailability.supportedCurrencies),
+      400
+    );
+  }
   const reference = `inv_${invoice._id}_${Date.now()}`;
   const callbackQuery = new URLSearchParams({
     source: 'invoice',
@@ -757,27 +862,11 @@ const buildPublicInvoicePayload = (req, invoice, businessWithSecret = null) => {
   const publicSlug = invoice?.publicSlug;
 
   const business = invoice?.business || {};
-  const globalPaystack = getGlobalPaystackConfig();
-  const paystackPublicKey = businessWithSecret?.paystack?.publicKey || business?.paystack?.publicKey || '';
-  const paystackEnabled = Boolean(
-    businessWithSecret?.paystack?.enabled
-    ?? business?.paystack?.enabled
-  );
-  const hasPaystackSecretKey = businessWithSecret
-    ? Boolean(businessWithSecret.paystack?.secretKeyEncrypted)
-    : false;
-
-  const hasBusinessPaystackConfig =
-    paystackEnabled
-    && Boolean(paystackPublicKey)
-    && (businessWithSecret ? hasPaystackSecretKey : true);
-  const resolvedPublicKey = hasBusinessPaystackConfig
-    ? paystackPublicKey
-    : globalPaystack.publicKey;
-  const canPayOnline =
-    !TERMINAL_INVOICE_STATUSES.has(status)
-    && amountDue > 0
-    && (hasBusinessPaystackConfig || globalPaystack.enabled);
+  const paystackAvailability = resolvePublicInvoicePaystackAvailability({
+    invoice,
+    business,
+    businessWithSecret
+  });
 
   return {
     id: invoice._id,
@@ -817,10 +906,12 @@ const buildPublicInvoicePayload = (req, invoice, businessWithSecret = null) => {
     },
     payment: {
       portalUrl: buildPublicPaymentPortalUrl(req, publicSlug),
-      canPayOnline,
+      canPayOnline: paystackAvailability.canPayOnline,
+      availabilityReason: paystackAvailability.availabilityReason,
+      supportedCurrencies: paystackAvailability.supportedCurrencies,
       provider: 'paystack',
-      publicKey: resolvedPublicKey,
-      publicKeyMasked: maskPublicKey(resolvedPublicKey),
+      publicKey: paystackAvailability.resolvedPublicKey,
+      publicKeyMasked: maskPublicKey(paystackAvailability.resolvedPublicKey),
       verifyUrl: '/api/v1/payments/verify'
     }
   };
