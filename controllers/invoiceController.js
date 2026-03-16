@@ -1113,11 +1113,10 @@ exports.sendInvoice = asyncHandler(async (req, res, next) => {
 
   const frontendBaseUrl = getConfiguredFrontendBaseUrl();
   const backendBaseUrl = getBackendBaseUrl(req);
-  const directPayNowUrl = `${backendBaseUrl}/api/v1/invoices/public/${invoice.publicSlug}/pay`;
+  const payNowUrl = `${backendBaseUrl}/api/v1/invoices/public/${invoice.publicSlug}/pay`;
   const invoiceUrl = frontendBaseUrl
     ? `${frontendBaseUrl}/invoice/pay/${invoice.publicSlug}`
-    : directPayNowUrl;
-  const payNowUrl = invoiceUrl || directPayNowUrl;
+    : payNowUrl;
 
   const mailContext = {
     customerName: invoice.customer?.name || 'Customer',
@@ -1520,11 +1519,10 @@ exports.sendReminder = asyncHandler(async (req, res, next) => {
 
   const frontendBaseUrl = getConfiguredFrontendBaseUrl();
   const backendBaseUrl = getBackendBaseUrl(req);
-  const directPayNowUrl = `${backendBaseUrl}/api/v1/invoices/public/${invoice.publicSlug}/pay`;
+  const payNowUrl = `${backendBaseUrl}/api/v1/invoices/public/${invoice.publicSlug}/pay`;
   const invoiceUrl = frontendBaseUrl
     ? `${frontendBaseUrl}/invoice/pay/${invoice.publicSlug}`
-    : directPayNowUrl;
-  const payNowUrl = invoiceUrl || directPayNowUrl;
+    : payNowUrl;
 
   // Send reminder email
   try {

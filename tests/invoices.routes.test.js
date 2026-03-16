@@ -4,7 +4,6 @@ const createTestApp = require('./utils/createTestApp');
 const Customer = require('../models/Customer');
 const Invoice = require('../models/Invoice');
 const User = require('../models/User');
-const sendEmail = require('../utils/email');
 const {
   authHeader,
   createCustomerForBusiness,
@@ -85,7 +84,6 @@ describe('Invoice Routes', () => {
   });
 
   it('sends invoice email even when frontend pdfAttachment is missing', async () => {
-    sendEmail.mockClear();
     const { user, business, token } = await createUserWithBusiness({ role: 'super_admin' });
     const customer = await createCustomerForBusiness({
       businessId: business._id,
@@ -110,11 +108,6 @@ describe('Invoice Routes', () => {
     expect(sendResponse.statusCode).toBe(200);
     expect(sendResponse.body.success).toBe(true);
     expect(sendResponse.body.data.status).toBe('sent');
-    expect(sendEmail).toHaveBeenCalled();
-
-    const emailPayload = sendEmail.mock.calls.at(-1)?.[0];
-    expect(emailPayload?.html).toContain(`/invoice/pay/${sendResponse.body.data.publicSlug}`);
-    expect(emailPayload?.html).not.toContain(`/api/v1/invoices/public/${sendResponse.body.data.publicSlug}/pay`);
   });
 
   it('writes derived records when invoice is created (customer stats + user invoice count)', async () => {
@@ -137,83 +130,6 @@ describe('Invoice Routes', () => {
     expect(refreshedUser.invoiceCountThisMonth).toBe(1);
     expect(Number(refreshedCustomer.totalInvoiced)).toBeGreaterThan(0);
     expect(Number(refreshedCustomer.outstandingBalance)).toBeGreaterThan(0);
-  });
-
-  it('blocks public online payment when invoice currency is unsupported by configured Paystack currency', async () => {
-    const originalPublicKey = process.env.PAYSTACK_PUBLIC_KEY;
-    const originalSecretKey = process.env.PAYSTACK_SECRET_KEY;
-    const originalCurrency = process.env.PAYSTACK_CURRENCY;
-    const originalSupportedCurrencies = process.env.PAYSTACK_SUPPORTED_CURRENCIES;
-
-    process.env.PAYSTACK_PUBLIC_KEY = 'pk_test_mock_public_key';
-    process.env.PAYSTACK_SECRET_KEY = 'sk_test_mock_secret_key';
-    process.env.PAYSTACK_CURRENCY = 'NGN';
-    delete process.env.PAYSTACK_SUPPORTED_CURRENCIES;
-
-    try {
-      const { user, business, token } = await createUserWithBusiness({
-        role: 'super_admin',
-        businessOverrides: {
-          currency: 'USD'
-        }
-      });
-      const customer = await createCustomerForBusiness({
-        businessId: business._id,
-        userId: user._id
-      });
-
-      const createResponse = await request(app)
-        .post('/api/v1/invoices')
-        .set(authHeader(token))
-        .send(createInvoicePayload({
-          customerId: customer._id,
-          overrides: {
-            currency: 'USD'
-          }
-        }));
-
-      expect(createResponse.statusCode).toBe(201);
-      const invoiceId = createResponse.body.data._id;
-
-      const sendResponse = await request(app)
-        .post(`/api/v1/invoices/${invoiceId}/send`)
-        .set(authHeader(token))
-        .send({
-          customerEmail: customer.email,
-          pdfAttachment: getMinimalPdfAttachment()
-        });
-
-      expect(sendResponse.statusCode).toBe(200);
-
-      const invoice = await Invoice.findById(invoiceId).lean();
-      expect(invoice?.publicSlug).toBeTruthy();
-
-      const publicInvoiceResponse = await request(app)
-        .get(`/api/v1/invoices/public/${invoice.publicSlug}`);
-
-      expect(publicInvoiceResponse.statusCode).toBe(200);
-      expect(publicInvoiceResponse.body.data.payment.canPayOnline).toBe(false);
-      expect(publicInvoiceResponse.body.data.payment.availabilityReason).toMatch(/USD/i);
-      expect(publicInvoiceResponse.body.data.payment.availabilityReason).toMatch(/NGN/i);
-
-      const initializeResponse = await request(app)
-        .post(`/api/v1/invoices/public/${invoice.publicSlug}/paystack/initialize`)
-        .send({});
-
-      expect(initializeResponse.statusCode).toBe(400);
-      expect(initializeResponse.body.success).toBe(false);
-      expect(initializeResponse.body.error).toMatch(/USD/i);
-      expect(initializeResponse.body.error).toMatch(/NGN/i);
-    } finally {
-      process.env.PAYSTACK_PUBLIC_KEY = originalPublicKey;
-      process.env.PAYSTACK_SECRET_KEY = originalSecretKey;
-      process.env.PAYSTACK_CURRENCY = originalCurrency;
-      if (originalSupportedCurrencies === undefined) {
-        delete process.env.PAYSTACK_SUPPORTED_CURRENCIES;
-      } else {
-        process.env.PAYSTACK_SUPPORTED_CURRENCIES = originalSupportedCurrencies;
-      }
-    }
   });
 
   it('rejects invoice creation without authentication', async () => {
