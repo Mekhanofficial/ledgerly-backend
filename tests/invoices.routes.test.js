@@ -4,6 +4,7 @@ const createTestApp = require('./utils/createTestApp');
 const Customer = require('../models/Customer');
 const Invoice = require('../models/Invoice');
 const User = require('../models/User');
+const sendEmail = require('../utils/email');
 const {
   authHeader,
   createCustomerForBusiness,
@@ -84,6 +85,7 @@ describe('Invoice Routes', () => {
   });
 
   it('sends invoice email even when frontend pdfAttachment is missing', async () => {
+    sendEmail.mockClear();
     const { user, business, token } = await createUserWithBusiness({ role: 'super_admin' });
     const customer = await createCustomerForBusiness({
       businessId: business._id,
@@ -108,6 +110,11 @@ describe('Invoice Routes', () => {
     expect(sendResponse.statusCode).toBe(200);
     expect(sendResponse.body.success).toBe(true);
     expect(sendResponse.body.data.status).toBe('sent');
+    expect(sendEmail).toHaveBeenCalled();
+
+    const emailPayload = sendEmail.mock.calls.at(-1)?.[0];
+    expect(emailPayload?.html).toContain(`/invoice/pay/${sendResponse.body.data.publicSlug}`);
+    expect(emailPayload?.html).not.toContain(`/api/v1/invoices/public/${sendResponse.body.data.publicSlug}/pay`);
   });
 
   it('writes derived records when invoice is created (customer stats + user invoice count)', async () => {
