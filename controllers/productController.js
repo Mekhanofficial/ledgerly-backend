@@ -10,6 +10,91 @@ const {
   uploadCloudinaryImage
 } = require('../utils/assetStorage');
 
+const PRODUCT_LIST_PROJECTION = {
+  name: 1,
+  sku: 1,
+  description: 1,
+  category: 1,
+  supplier: 1,
+  sellingPrice: 1,
+  costPrice: 1,
+  unit: 1,
+  stock: 1,
+  isActive: 1,
+  type: 1,
+  taxRate: 1,
+  discount: 1,
+  trackInventory: 1,
+  alertOnLowStock: 1,
+  createdAt: 1,
+  updatedAt: 1
+};
+
+const buildProductListPipeline = (query, page, limit) => ([
+  { $match: query },
+  { $project: PRODUCT_LIST_PROJECTION },
+  { $sort: { _id: -1 } },
+  { $skip: (page - 1) * limit },
+  { $limit: limit },
+  {
+    $lookup: {
+      from: 'categories',
+      localField: 'category',
+      foreignField: '_id',
+      as: 'categoryDoc'
+    }
+  },
+  {
+    $lookup: {
+      from: 'suppliers',
+      localField: 'supplier',
+      foreignField: '_id',
+      as: 'supplierDoc'
+    }
+  },
+  {
+    $set: {
+      category: {
+        $let: {
+          vars: {
+            entry: { $arrayElemAt: ['$categoryDoc', 0] }
+          },
+          in: {
+            $cond: [
+              { $ifNull: ['$$entry._id', false] },
+              {
+                _id: '$$entry._id',
+                name: '$$entry.name'
+              },
+              '$category'
+            ]
+          }
+        }
+      },
+      supplier: {
+        $let: {
+          vars: {
+            entry: { $arrayElemAt: ['$supplierDoc', 0] }
+          },
+          in: {
+            $cond: [
+              { $ifNull: ['$$entry._id', false] },
+              {
+                _id: '$$entry._id',
+                name: '$$entry.name'
+              },
+              '$supplier'
+            ]
+          }
+        }
+      }
+    }
+  },
+  {
+    $unset: ['categoryDoc', 'supplierDoc']
+  }
+]);
+
 const toStockNumber = (value, fallback = 0) => {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
@@ -140,14 +225,9 @@ exports.getProducts = asyncHandler(async (req, res, next) => {
     };
   }
   
-  let products = await Product.find(query)
-    .populate('category', 'name')
-    .populate('supplier', 'name')
-    // Use indexed _id sort to avoid Mongo in-memory sort failures on large product docs.
-    .sort({ _id: -1 })
-    .skip((parsedPage - 1) * parsedLimit)
-    .limit(parsedLimit)
-    .lean();
+  let products = await Product.aggregate(
+    buildProductListPipeline(query, parsedPage, parsedLimit)
+  ).option({ allowDiskUse: true });
     
   let total = await Product.countDocuments(query);
 
@@ -212,13 +292,9 @@ exports.getProducts = asyncHandler(async (req, res, next) => {
         // Backfill all scoped legacy rows, then re-run the standard business query.
         await Product.updateMany(legacyBusinessScope, { $set: { business: req.user.business } });
 
-        products = await Product.find(query)
-          .populate('category', 'name')
-          .populate('supplier', 'name')
-          .sort({ _id: -1 })
-          .skip((parsedPage - 1) * parsedLimit)
-          .limit(parsedLimit)
-          .lean();
+        products = await Product.aggregate(
+          buildProductListPipeline(query, parsedPage, parsedLimit)
+        ).option({ allowDiskUse: true });
 
         total = await Product.countDocuments(query);
       }

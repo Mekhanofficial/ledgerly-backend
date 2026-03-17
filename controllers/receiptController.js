@@ -102,7 +102,7 @@ const buildReceiptEmailHtml = ({ receipt, context, templateMeta }) => {
   const templateName = templateMeta?.name || 'Standard';
   const logoUrl = resolveBusinessLogoUrl(receipt?.business);
   const logoMarkup = logoUrl
-    ? `<img src="${escapeHtml(logoUrl)}" alt="${escapeHtml(context.businessName)} logo" style="display:block;max-width:140px;max-height:56px;width:auto;height:auto;" />`
+    ? `<img src="${escapeHtml(logoUrl)}" alt="${escapeHtml(context.businessName)} logo" style="display:block;max-width:140px;max-height:56px;width:auto;height:auto;margin-left:auto;" />`
     : '';
 
   return `
@@ -110,13 +110,15 @@ const buildReceiptEmailHtml = ({ receipt, context, templateMeta }) => {
       <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="max-width:640px;margin:0 auto;background:#fff;border:1px solid #e2e8f0;border-radius:10px;overflow:hidden;">
         <tr>
           <td style="padding:20px;background:linear-gradient(90deg, ${primary} 0%, ${secondary} 100%);">
-            <div style="display:flex;align-items:center;justify-content:space-between;gap:16px;">
-              <div>
-                <div style="font-size:22px;font-weight:700;color:#fff;">${escapeHtml(context.businessName)}</div>
-                <div style="font-size:12px;color:#dbeafe;margin-top:6px;">Receipt Template: ${escapeHtml(templateName)}</div>
-              </div>
-              ${logoMarkup ? `<div style="flex-shrink:0;">${logoMarkup}</div>` : ''}
-            </div>
+            <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;">
+              <tr>
+                <td style="vertical-align:top;padding-right:16px;">
+                  <div style="font-size:22px;font-weight:700;color:#fff;">${escapeHtml(context.businessName)}</div>
+                  <div style="font-size:12px;color:#dbeafe;margin-top:6px;">Receipt Template: ${escapeHtml(templateName)}</div>
+                </td>
+                ${logoMarkup ? `<td style="width:160px;text-align:right;vertical-align:top;">${logoMarkup}</td>` : ''}
+              </tr>
+            </table>
           </td>
         </tr>
         <tr>
